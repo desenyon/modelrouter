@@ -48,31 +48,57 @@ func newTable(headers ...string) *lgtable.Table {
 }
 
 func PrintModels(models []api.Model) {
-	t := newTable("MODEL", "CTX", "IN $/M", "OUT $/M", "MODS", "CAPS", "CREATED")
+	t := newTable("MODEL", "CTX", "INPUT", "OUTPUT", "MODS", "CAPS", "CREATED")
 	for _, m := range models {
 		t.Row(m.ID, api.FmtCtx(m.ContextLength),
-			api.FmtPrice(m.Pricing.PromptPerM()), api.FmtPrice(m.Pricing.CompletionPerM()),
+			m.InputPrice(), m.OutputPrice(),
 			api.FmtModalities(m.Architecture), api.FmtCaps(m),
 			m.CreatedTime().Format("2006-01-02"))
 	}
 	fmt.Println(t.Render())
-	fmt.Println(dimStyle.Render(fmt.Sprintf(" %d models · caps: T=tools R=reasoning S=structured", len(models))))
+	fmt.Println(dimStyle.Render(fmt.Sprintf(
+		" %d models · /M=per million tokens · /Mu=per million upstream billing units · caps: T=tools R=reasoning S=structured",
+		len(models))))
 }
 
 func PrintProviders(providers []api.Provider) {
-	t := newTable("PROVIDER", "SLUG", "HQ", "DATACENTERS")
+	t := newTable("PROVIDER", "SLUG", "HQ", "API", "BYOK", "TRAINING", "PROMPT RETENTION", "USER ID", "LINKS")
 	for _, p := range providers {
-		dc := strings.Join(p.Datacenters, ", ")
-		if dc == "" {
-			dc = "-"
-		}
 		hq := p.Headquarters
 		if hq == "" {
 			hq = "-"
 		}
-		t.Row(p.Name, p.Slug, hq, dc)
+		chat := "legacy"
+		if p.HasChatCompletions {
+			chat = "chat"
+		}
+		byok := "no"
+		if p.BYOKEnabled {
+			byok = "yes"
+		}
+		training, retention, userID := "-", "-", "-"
+		if p.PolicyAvailable {
+			training, retention, userID = "no", "no", "no"
+			if p.DataPolicy.Training || p.DataPolicy.TrainingOpenRouter {
+				training = "yes"
+			}
+			if p.DataPolicy.RetainsPrompts {
+				retention = "yes"
+			}
+			if p.DataPolicy.RequiresUserIDs {
+				userID = "yes"
+			}
+		}
+		links := 0
+		for _, u := range []string{p.PrivacyURL(), p.TermsURL(), p.StatusURL()} {
+			if u != "" {
+				links++
+			}
+		}
+		t.Row(p.Label(), p.Slug, hq, chat, byok, training, retention, userID, fmt.Sprintf("%d/3", links))
 	}
 	fmt.Println(t.Render())
+	fmt.Println(dimStyle.Render(fmt.Sprintf(" %d OpenRouter providers · -=policy metadata unavailable", len(providers))))
 }
 
 func PrintModelDetail(m api.Model, eps *api.ModelEndpoints, epsErr error) {
@@ -92,12 +118,12 @@ func PrintModelDetail(m api.Model, eps *api.ModelEndpoints, epsErr error) {
 	priceStyle := lipgloss.NewStyle().Foreground(cAccent).Bold(true)
 	fmt.Printf(" %s %s in · %s out",
 		titleStyle.Foreground(cPrimary).Render("pricing:"),
-		priceStyle.Render(api.FmtPrice(m.Pricing.PromptPerM())),
-		priceStyle.Render(api.FmtPrice(m.Pricing.CompletionPerM())))
+		priceStyle.Render(m.InputPrice()),
+		priceStyle.Render(m.OutputPrice()))
 	if m.Pricing.InputCacheRead != "" {
 		fmt.Printf(" · %s cache-read", priceStyle.Render(api.FmtPrice(m.Pricing.CacheReadPerM())))
 	}
-	fmt.Println(dimStyle.Render("  ($/M tokens)"))
+	fmt.Println(dimStyle.Render("  (/M tokens · /Mu upstream billing units)"))
 
 	params := append([]string(nil), m.SupportedParameters...)
 	sort.Strings(params)
@@ -110,7 +136,7 @@ func PrintModelDetail(m api.Model, eps *api.ModelEndpoints, epsErr error) {
 	case eps == nil || len(eps.Endpoints) == 0:
 		fmt.Println(dimStyle.Render(" no active endpoints"))
 	default:
-		t := newTable("PROVIDER", "QUANT", "CTX", "MAX OUT", "IN $/M", "OUT $/M", "UPTIME 1D", "LATENCY", "TPS")
+		t := newTable("PROVIDER", "QUANT", "CTX", "MAX OUT", "INPUT", "OUTPUT", "UPTIME 1D", "LATENCY", "TPS")
 		for _, e := range eps.Endpoints {
 			up, lat, tps, maxOut := "-", "-", "-", "-"
 			if e.UptimeLast1d != nil {
@@ -129,8 +155,10 @@ func PrintModelDetail(m api.Model, eps *api.ModelEndpoints, epsErr error) {
 			if quant == "" || quant == "unknown" {
 				quant = "-"
 			}
+			endpointModel := m
+			endpointModel.Pricing = e.Pricing
 			t.Row(e.ProviderName, quant, api.FmtCtx(e.ContextLength), maxOut,
-				api.FmtPrice(e.Pricing.PromptPerM()), api.FmtPrice(e.Pricing.CompletionPerM()), up, lat, tps)
+				endpointModel.InputPrice(), endpointModel.OutputPrice(), up, lat, tps)
 		}
 		fmt.Println(t.Render())
 	}
@@ -138,11 +166,11 @@ func PrintModelDetail(m api.Model, eps *api.ModelEndpoints, epsErr error) {
 
 func PrintStats(s api.Stats) {
 	fmt.Println()
-	fmt.Printf(" %s  %d models · %d authors · %d providers · %d free · %d tool-use · %d reasoning · %d vision\n",
+	fmt.Printf(" %s  %d models (%d text, %d other) · %d authors · %d providers · %d free · %d tool-use · %d reasoning · %d vision\n",
 		titleStyle.Foreground(cPrimary).Render("openrouter catalog:"),
-		s.TotalModels, s.TotalAuthors, s.TotalProviders, s.FreeModels, s.ToolModels, s.ReasoningModels, s.VisionModels)
+		s.TotalModels, s.TextModels, s.NonTextModels, s.TotalAuthors, s.TotalProviders, s.FreeModels, s.ToolModels, s.ReasoningModels, s.VisionModels)
 	fmt.Printf(" %s  median %s in / %s out · max %s in\n\n",
-		titleStyle.Foreground(cPrimary).Render("paid pricing ($/M):"),
+		titleStyle.Foreground(cPrimary).Render("paid text pricing ($/M tokens):"),
 		api.FmtPrice(s.MedianPromptPerM), api.FmtPrice(s.MedianCompletionPerM), api.FmtPrice(s.MaxPromptPerM))
 
 	printBars("top authors", s.TopAuthors, cPrimary)
@@ -152,7 +180,7 @@ func PrintStats(s api.Stats) {
 	fmt.Println(" " + titleStyle.Foreground(cPrimary).Render("newest models"))
 	for _, m := range s.Newest {
 		fmt.Printf("   %s  %-44s %s / %s\n", m.CreatedTime().Format("2006-01-02"), m.ID,
-			api.FmtPrice(m.Pricing.PromptPerM()), api.FmtPrice(m.Pricing.CompletionPerM()))
+			m.InputPrice(), m.OutputPrice())
 	}
 }
 

@@ -58,6 +58,24 @@ func (v *ModelsView) SetSize(w, h int) {
 	v.refresh()
 }
 
+func (v *ModelsView) SetModels(models []api.Model) {
+	selected := ""
+	if current := v.Selected(); current != nil {
+		selected = current.ID
+	}
+	v.all = models
+	v.refresh()
+	if selected == "" {
+		return
+	}
+	for i := range v.filtered {
+		if v.filtered[i].ID == selected {
+			v.tbl.SetCursor(i)
+			return
+		}
+	}
+}
+
 func (v *ModelsView) columns() []table.Column {
 	fixed := 7 + 9 + 9 + 8 + 5 + 6 // ctx,in,out,mods,caps,age
 	idW := v.width - fixed - 14    // cell padding margin
@@ -70,8 +88,8 @@ func (v *ModelsView) columns() []table.Column {
 	return []table.Column{
 		{Title: "MODEL", Width: idW},
 		{Title: "CTX", Width: 7},
-		{Title: "IN $/M", Width: 9},
-		{Title: "OUT $/M", Width: 9},
+		{Title: "INPUT", Width: 9},
+		{Title: "OUTPUT", Width: 9},
 		{Title: "MODS", Width: 8},
 		{Title: "CAPS", Width: 5},
 		{Title: "AGE", Width: 6},
@@ -86,13 +104,11 @@ func (v *ModelsView) refresh() {
 	}
 	rows := make([]table.Row, len(v.filtered))
 	for i, m := range v.filtered {
-		in := api.FmtPrice(m.Pricing.PromptPerM())
-		out := api.FmtPrice(m.Pricing.CompletionPerM())
 		rows[i] = table.Row{
 			m.ID,
 			api.FmtCtx(m.ContextLength),
-			in,
-			out,
+			m.InputPrice(),
+			m.OutputPrice(),
 			api.FmtModalities(m.Architecture),
 			api.FmtCaps(m),
 			api.FmtAge(m.CreatedTime()),

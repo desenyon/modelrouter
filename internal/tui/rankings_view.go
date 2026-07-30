@@ -15,8 +15,8 @@ import (
 var appPeriods = []string{"day", "week", "month"}
 
 type RankingsView struct {
-	rankings *api.Rankings
-	err      error
+	rankings  *api.Rankings
+	err       error
 	periodIdx int
 
 	vp            viewport.Model
@@ -69,7 +69,7 @@ func (v *RankingsView) View() string { return v.vp.View() }
 func (v *RankingsView) ScrollPercent() float64 { return v.vp.ScrollPercent() }
 
 func (v *RankingsView) content() string {
-	if v.err != nil {
+	if v.err != nil && v.rankings == nil {
 		return "\n " + styleErr.Render("rankings unavailable: ") + v.err.Error() +
 			"\n " + styleDim.Render("(unofficial frontend API — may have changed)")
 	}
@@ -78,6 +78,9 @@ func (v *RankingsView) content() string {
 	}
 	r := v.rankings
 	var b strings.Builder
+	if v.err != nil {
+		b.WriteString(" " + styleErr.Render("live refresh failed · showing prior rankings snapshot") + "\n")
+	}
 
 	if !r.FetchedAt.IsZero() {
 		b.WriteString(" " + styleDim.Render(

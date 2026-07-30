@@ -18,15 +18,16 @@ func main() {
 	client := api.New()
 
 	var (
-		jsonOut  bool
-		sortFlag string
-		desc     bool
-		search   string
-		freeOnly bool
-		tools    bool
-		modality string
-		limit    int
-		refresh  bool
+		jsonOut      bool
+		sortFlag     string
+		desc         bool
+		search       string
+		freeOnly     bool
+		tools        bool
+		modality     string
+		modelLimit   int
+		rankingLimit int
+		refresh      bool
 	)
 
 	root := &cobra.Command{
@@ -56,8 +57,8 @@ func main() {
 			if search == "" {
 				api.SortModels(models, api.ParseSortKey(sortFlag), desc)
 			}
-			if limit > 0 && len(models) > limit {
-				models = models[:limit]
+			if modelLimit > 0 && len(models) > modelLimit {
+				models = models[:modelLimit]
 			}
 			if jsonOut {
 				return cli.JSON(models)
@@ -73,7 +74,7 @@ func main() {
 	modelsCmd.Flags().BoolVar(&freeOnly, "free", false, "free models only")
 	modelsCmd.Flags().BoolVar(&tools, "tools", false, "models with tool calling only")
 	modelsCmd.Flags().StringVar(&modality, "input", "", "require input modality: text|image|audio|file")
-	modelsCmd.Flags().IntVar(&limit, "limit", 0, "max rows (0 = all)")
+	modelsCmd.Flags().IntVar(&modelLimit, "limit", 0, "max rows (0 = all)")
 
 	modelCmd := &cobra.Command{
 		Use:   "model <id>",
@@ -88,10 +89,12 @@ func main() {
 			if m == nil {
 				return fmt.Errorf("no model matching %q", args[0])
 			}
-			eps, epsErr := client.Endpoints(m.ID)
+			eps, epsErr := client.Endpoints(m.ID, refresh)
 			var mb *api.ModelBench
 			if bench, err := client.Benchmarks(refresh); err == nil {
 				mb = bench.ForModel(*m)
+			} else if refresh {
+				return err
 			}
 			if jsonOut {
 				return cli.JSON(map[string]any{"model": m, "endpoints": eps, "benchmarks": mb})
@@ -168,13 +171,13 @@ func main() {
 			}
 			switch what {
 			case "models":
-				cli.PrintTopModels(r, limit)
+				cli.PrintTopModels(r, rankingLimit)
 			case "apps":
 				cli.PrintApps(r, appsPeriod)
 			case "share":
 				cli.PrintMarketShare(r)
 			case "perf":
-				cli.PrintPerformance(r, limit)
+				cli.PrintPerformance(r, rankingLimit)
 			case "all":
 				cli.PrintTopModels(r, 20)
 				cli.PrintMarketShare(r)
@@ -187,7 +190,7 @@ func main() {
 		},
 	}
 	rankingsCmd.Flags().BoolVar(&jsonOut, "json", false, "emit JSON")
-	rankingsCmd.Flags().IntVar(&limit, "limit", 25, "max rows (0 = all)")
+	rankingsCmd.Flags().IntVar(&rankingLimit, "limit", 25, "max rows (0 = all)")
 	rankingsCmd.Flags().StringVar(&appsPeriod, "period", "week", "apps period: day|week|month")
 
 	benchCmd := &cobra.Command{
@@ -234,7 +237,7 @@ func main() {
 						defer wg.Done()
 						sem <- struct{}{}
 						defer func() { <-sem }()
-						if e, err := client.Endpoints(id); err == nil {
+						if e, err := client.Endpoints(id, refresh); err == nil {
 							mu.Lock()
 							eps[id] = e
 							mu.Unlock()

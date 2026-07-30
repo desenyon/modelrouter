@@ -16,9 +16,20 @@ import (
 const BaseURL = "https://openrouter.ai/api/v1"
 
 type Client struct {
-	http     *http.Client
-	CacheDir string
-	TTL      time.Duration
+	http            *http.Client
+	baseURL         string
+	frontendBaseURL string
+	CacheDir        string
+	TTL             time.Duration
+}
+
+type UnexpectedShapeError struct {
+	Endpoint string
+	Detail   string
+}
+
+func (e UnexpectedShapeError) Error() string {
+	return fmt.Sprintf("%s returned an unexpected response: %s", e.Endpoint, e.Detail)
 }
 
 func New() *Client {
@@ -27,9 +38,11 @@ func New() *Client {
 		dir = os.TempDir()
 	}
 	return &Client{
-		http:     &http.Client{Timeout: 30 * time.Second},
-		CacheDir: filepath.Join(dir, "modelrouter"),
-		TTL:      time.Hour,
+		http:            &http.Client{Timeout: 30 * time.Second},
+		baseURL:         BaseURL,
+		frontendBaseURL: frontendBaseURL,
+		CacheDir:        filepath.Join(dir, "modelrouter"),
+		TTL:             RankingsTTL,
 	}
 }
 
@@ -44,15 +57,42 @@ type Architecture struct {
 
 // Pricing values are USD per token (strings in the API).
 type Pricing struct {
-	Prompt            string  `json:"prompt"`
-	Completion        string  `json:"completion"`
-	Image             string  `json:"image,omitempty"`
-	Audio             string  `json:"audio,omitempty"`
-	WebSearch         string  `json:"web_search,omitempty"`
-	InternalReasoning string  `json:"internal_reasoning,omitempty"`
-	InputCacheRead    string  `json:"input_cache_read,omitempty"`
-	InputCacheWrite   string  `json:"input_cache_write,omitempty"`
-	Discount          float64 `json:"discount,omitempty"`
+	Prompt            string            `json:"prompt"`
+	Completion        string            `json:"completion"`
+	Request           string            `json:"request,omitempty"`
+	Image             string            `json:"image,omitempty"`
+	ImageOutput       string            `json:"image_output,omitempty"`
+	ImageToken        string            `json:"image_token,omitempty"`
+	Audio             string            `json:"audio,omitempty"`
+	AudioOutput       string            `json:"audio_output,omitempty"`
+	WebSearch         string            `json:"web_search,omitempty"`
+	InternalReasoning string            `json:"internal_reasoning,omitempty"`
+	InputCacheRead    string            `json:"input_cache_read,omitempty"`
+	InputCacheWrite   string            `json:"input_cache_write,omitempty"`
+	Discount          float64           `json:"discount,omitempty"`
+	Overrides         []PricingOverride `json:"overrides,omitempty"`
+}
+
+type PricingOverride struct {
+	MinPromptTokens *int   `json:"min_prompt_tokens,omitempty"`
+	UTCStart        *int   `json:"utc_start,omitempty"`
+	UTCEnd          *int   `json:"utc_end,omitempty"`
+	Prompt          string `json:"prompt,omitempty"`
+	Completion      string `json:"completion,omitempty"`
+	InputCacheRead  string `json:"input_cache_read,omitempty"`
+	InputCacheWrite string `json:"input_cache_write,omitempty"`
+}
+
+type ModelLinks struct {
+	Details string `json:"details"`
+}
+
+type ReasoningConfig struct {
+	Mandatory         bool     `json:"mandatory"`
+	DefaultEnabled    bool     `json:"default_enabled"`
+	SupportsMaxTokens bool     `json:"supports_max_tokens"`
+	SupportedEfforts  []string `json:"supported_efforts"`
+	DefaultEffort     string   `json:"default_effort"`
 }
 
 type TopProvider struct {
@@ -62,22 +102,25 @@ type TopProvider struct {
 }
 
 type Model struct {
-	ID                  string         `json:"id"`
-	CanonicalSlug       string         `json:"canonical_slug"`
-	HuggingFaceID       *string        `json:"hugging_face_id"`
-	Name                string         `json:"name"`
-	Created             int64          `json:"created"`
-	Description         string         `json:"description"`
-	ContextLength       int            `json:"context_length"`
-	Architecture        Architecture   `json:"architecture"`
-	Pricing             Pricing        `json:"pricing"`
-	TopProvider         TopProvider    `json:"top_provider"`
-	PerRequestLimits    any            `json:"per_request_limits"`
-	SupportedParameters []string       `json:"supported_parameters"`
-	DefaultParameters   map[string]any `json:"default_parameters"`
-	SupportedVoices     []string       `json:"supported_voices"`
-	KnowledgeCutoff     *string        `json:"knowledge_cutoff"`
-	ExpirationDate      *string        `json:"expiration_date"`
+	ID                  string           `json:"id"`
+	CanonicalSlug       string           `json:"canonical_slug"`
+	HuggingFaceID       *string          `json:"hugging_face_id"`
+	Name                string           `json:"name"`
+	Created             int64            `json:"created"`
+	Description         string           `json:"description"`
+	ContextLength       int              `json:"context_length"`
+	Architecture        Architecture     `json:"architecture"`
+	Pricing             Pricing          `json:"pricing"`
+	TopProvider         TopProvider      `json:"top_provider"`
+	PerRequestLimits    any              `json:"per_request_limits"`
+	SupportedParameters []string         `json:"supported_parameters"`
+	DefaultParameters   map[string]any   `json:"default_parameters"`
+	SupportedVoices     []string         `json:"supported_voices"`
+	KnowledgeCutoff     *string          `json:"knowledge_cutoff"`
+	ExpirationDate      *string          `json:"expiration_date"`
+	Links               ModelLinks       `json:"links"`
+	Benchmarks          *ModelBenchmarks `json:"benchmarks,omitempty"`
+	Reasoning           *ReasoningConfig `json:"reasoning,omitempty"`
 }
 
 type Endpoint struct {
@@ -110,13 +153,34 @@ type ModelEndpoints struct {
 }
 
 type Provider struct {
-	Name             string   `json:"name"`
-	Slug             string   `json:"slug"`
-	Headquarters     string   `json:"headquarters"`
-	Datacenters      []string `json:"datacenters"`
-	PrivacyPolicyURL *string  `json:"privacy_policy_url"`
-	TermsOfServiceURL *string `json:"terms_of_service_url"`
-	StatusPageURL    *string  `json:"status_page_url"`
+	Name               string             `json:"name"`
+	DisplayName        string             `json:"displayName"`
+	Slug               string             `json:"slug"`
+	BaseURL            string             `json:"baseUrl"`
+	Headquarters       string             `json:"headquarters"`
+	Datacenters        []string           `json:"datacenters"`
+	PrivacyPolicyURL   *string            `json:"privacy_policy_url"`
+	TermsOfServiceURL  *string            `json:"terms_of_service_url"`
+	StatusPageURL      *string            `json:"status_page_url"`
+	DataPolicy         ProviderDataPolicy `json:"dataPolicy"`
+	HasChatCompletions bool               `json:"hasChatCompletions"`
+	HasCompletions     bool               `json:"hasCompletions"`
+	IsAbortable        bool               `json:"isAbortable"`
+	ModerationRequired bool               `json:"moderationRequired"`
+	BYOKEnabled        bool               `json:"byokEnabled"`
+	SendClientIP       bool               `json:"sendClientIp"`
+	StatusPageURLV1    string             `json:"statusPageUrl"`
+	PolicyAvailable    bool               `json:"policy_metadata_available"`
+}
+
+type ProviderDataPolicy struct {
+	Training           bool   `json:"training"`
+	TrainingOpenRouter bool   `json:"trainingOpenRouter"`
+	RetainsPrompts     bool   `json:"retainsPrompts"`
+	CanPublish         bool   `json:"canPublish"`
+	RequiresUserIDs    bool   `json:"requiresUserIDs"`
+	TermsOfServiceURL  string `json:"termsOfServiceURL"`
+	PrivacyPolicyURL   string `json:"privacyPolicyURL"`
 }
 
 func (c *Client) fetch(url string) ([]byte, error) {
@@ -142,11 +206,12 @@ func (c *Client) fetch(url string) ([]byte, error) {
 }
 
 func (c *Client) cachedFetch(name, path string, force bool) ([]byte, error) {
-	return c.cachedFetchURL(name, BaseURL+path, force, c.TTL)
+	return c.cachedFetchURL(name, c.baseURL+path, force, c.TTL)
 }
 
 // cachedFetchURL returns cached bytes when fresh, otherwise fetches and caches.
-// On network failure a stale cache is still used as a fallback.
+// Normal reads may fall back to stale cache for offline use. Forced refreshes
+// are strict so --refresh can never report stale bytes as live.
 func (c *Client) cachedFetchURL(name, url string, force bool, ttl time.Duration) ([]byte, error) {
 	file := filepath.Join(c.CacheDir, name+".json")
 	if !force {
@@ -158,18 +223,34 @@ func (c *Client) cachedFetchURL(name, url string, force bool, ttl time.Duration)
 	}
 	b, err := c.fetch(url)
 	if err != nil {
-		if stale, rerr := os.ReadFile(file); rerr == nil {
-			return stale, nil
+		if !force {
+			if stale, rerr := os.ReadFile(file); rerr == nil {
+				return stale, nil
+			}
 		}
 		return nil, err
 	}
 	_ = os.MkdirAll(c.CacheDir, 0o755)
-	_ = os.WriteFile(file, b, 0o644)
+	if err := os.WriteFile(file, b, 0o644); err != nil {
+		if !force {
+			if stale, rerr := os.ReadFile(file); rerr == nil {
+				return stale, nil
+			}
+		}
+		return nil, err
+	}
 	return b, nil
 }
 
+func (c *Client) cacheTime(name string) time.Time {
+	if st, err := os.Stat(filepath.Join(c.CacheDir, name+".json")); err == nil {
+		return st.ModTime()
+	}
+	return time.Time{}
+}
+
 func (c *Client) Models(force bool) ([]Model, error) {
-	b, err := c.cachedFetch("models", "/models", force)
+	b, err := c.cachedFetch("models-all", "/models?output_modalities=all", force)
 	if err != nil {
 		return nil, err
 	}
@@ -178,6 +259,9 @@ func (c *Client) Models(force bool) ([]Model, error) {
 	}
 	if err := json.Unmarshal(b, &env); err != nil {
 		return nil, err
+	}
+	if len(env.Data) == 0 {
+		return nil, UnexpectedShapeError{Endpoint: "/models", Detail: "expected a non-empty data array"}
 	}
 	return env.Data, nil
 }
@@ -193,12 +277,45 @@ func (c *Client) Providers(force bool) ([]Provider, error) {
 	if err := json.Unmarshal(b, &env); err != nil {
 		return nil, err
 	}
-	return env.Data, nil
+	official := env.Data
+	if len(official) == 0 {
+		return nil, UnexpectedShapeError{Endpoint: "/providers", Detail: "expected a non-empty data array"}
+	}
+	rich, richErr := frontendGet[[]Provider](c, "providers-rich", "/providers", force)
+	if richErr != nil || len(rich) == 0 {
+		return official, nil
+	}
+	bySlug := make(map[string]Provider, len(rich))
+	for _, p := range rich {
+		p.PolicyAvailable = true
+		bySlug[p.Slug] = p
+	}
+	for i, p := range official {
+		if enriched, ok := bySlug[p.Slug]; ok {
+			enriched.Datacenters = p.Datacenters
+			enriched.PrivacyPolicyURL = p.PrivacyPolicyURL
+			enriched.TermsOfServiceURL = p.TermsOfServiceURL
+			enriched.StatusPageURL = p.StatusPageURL
+			if enriched.Headquarters == "" {
+				enriched.Headquarters = p.Headquarters
+			}
+			official[i] = enriched
+			delete(bySlug, p.Slug)
+		}
+	}
+	for _, p := range rich {
+		if _, ok := bySlug[p.Slug]; ok {
+			p.PolicyAvailable = true
+			official = append(official, p)
+		}
+	}
+	return official, nil
 }
 
-func (c *Client) Endpoints(modelID string) (*ModelEndpoints, error) {
+func (c *Client) Endpoints(modelID string, refresh ...bool) (*ModelEndpoints, error) {
 	name := "endpoints-" + strings.NewReplacer("/", "_", ":", "_").Replace(modelID)
-	b, err := c.cachedFetch(name, "/models/"+modelID+"/endpoints", false)
+	force := len(refresh) > 0 && refresh[0]
+	b, err := c.cachedFetch(name, "/models/"+modelID+"/endpoints", force)
 	if err != nil {
 		return nil, err
 	}
@@ -212,6 +329,43 @@ func (c *Client) Endpoints(modelID string) (*ModelEndpoints, error) {
 }
 
 func (c *Client) ClearCache() error { return os.RemoveAll(c.CacheDir) }
+
+func (p Provider) Label() string {
+	if p.DisplayName != "" {
+		return p.DisplayName
+	}
+	return p.Name
+}
+
+func (p Provider) PrivacyURL() string {
+	if p.DataPolicy.PrivacyPolicyURL != "" {
+		return p.DataPolicy.PrivacyPolicyURL
+	}
+	if p.PrivacyPolicyURL != nil {
+		return *p.PrivacyPolicyURL
+	}
+	return ""
+}
+
+func (p Provider) TermsURL() string {
+	if p.DataPolicy.TermsOfServiceURL != "" {
+		return p.DataPolicy.TermsOfServiceURL
+	}
+	if p.TermsOfServiceURL != nil {
+		return *p.TermsOfServiceURL
+	}
+	return ""
+}
+
+func (p Provider) StatusURL() string {
+	if p.StatusPageURLV1 != "" {
+		return p.StatusPageURLV1
+	}
+	if p.StatusPageURL != nil {
+		return *p.StatusPageURL
+	}
+	return ""
+}
 
 // --- model helpers ---
 
@@ -235,6 +389,9 @@ func (m Model) Author() string {
 }
 
 func (m Model) IsFree() bool {
+	if !m.HasOutput("text") && !m.HasOutput("embeddings") {
+		return strings.HasSuffix(m.ID, ":free")
+	}
 	return perTok(m.Pricing.Prompt) == 0 && perTok(m.Pricing.Completion) == 0
 }
 
@@ -254,6 +411,47 @@ func (m Model) HasInput(mod string) bool {
 		}
 	}
 	return false
+}
+
+func (m Model) HasOutput(mod string) bool {
+	for _, s := range m.Architecture.OutputModalities {
+		if s == mod {
+			return true
+		}
+	}
+	return false
+}
+
+func (m Model) InputPrice() string {
+	if m.HasInput("text") {
+		if perTok(m.Pricing.Prompt) < 0 {
+			return "dynamic"
+		}
+		return FmtPrice(m.Pricing.PromptPerM()) + "/M"
+	}
+	if perTok(m.Pricing.Prompt) < 0 {
+		return "dynamic"
+	}
+	if m.Pricing.Prompt == "" || perTok(m.Pricing.Prompt) == 0 {
+		return "-"
+	}
+	return FmtPrice(perTok(m.Pricing.Prompt)*1e6) + "/Mu"
+}
+
+func (m Model) OutputPrice() string {
+	if m.HasOutput("text") {
+		if perTok(m.Pricing.Completion) < 0 {
+			return "dynamic"
+		}
+		return FmtPrice(m.Pricing.CompletionPerM()) + "/M"
+	}
+	if m.HasOutput("image") && perTok(m.Pricing.ImageOutput) > 0 {
+		return FmtPrice(perTok(m.Pricing.ImageOutput)*1e6) + "/Mu"
+	}
+	if m.Pricing.Completion == "" || perTok(m.Pricing.Completion) == 0 {
+		return "-"
+	}
+	return FmtPrice(perTok(m.Pricing.Completion)*1e6) + "/Mu"
 }
 
 func (m Model) CreatedTime() time.Time { return time.Unix(m.Created, 0) }

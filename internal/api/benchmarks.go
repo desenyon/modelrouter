@@ -1,6 +1,11 @@
 package api
 
-import "sort"
+import (
+	"encoding/json"
+	"sort"
+	"strings"
+	"time"
+)
 
 // Benchmarks mirrors /api/frontend/rankings/benchmarks: Artificial Analysis
 // scores, Design Arena results, and OpenRouter's blended cost estimates.
@@ -9,6 +14,37 @@ type Benchmarks struct {
 	DA                  map[string][]DARow   `json:"daData"` // models-website, models-svg, ...
 	WeightedInputPrices map[string]float64   `json:"weightedInputPrices"`
 	CostPerRequest      map[string]float64   `json:"costPerRequest"`
+	FetchedAt           time.Time            `json:"fetched_at"`
+}
+
+// UnmarshalJSON tolerates metadata values such as aaData.percentilesBySlug that
+// are objects rather than leaderboard row arrays.
+func (b *Benchmarks) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		AA                  map[string]json.RawMessage `json:"aaData"`
+		DA                  map[string][]DARow         `json:"daData"`
+		WeightedInputPrices map[string]float64         `json:"weightedInputPrices"`
+		CostPerRequest      map[string]float64         `json:"costPerRequest"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	b.AA = make(map[string][]AAScore, len(raw.AA))
+	for category, rows := range raw.AA {
+		trimmed := strings.TrimSpace(string(rows))
+		if !strings.HasPrefix(trimmed, "[") {
+			continue
+		}
+		var scores []AAScore
+		if err := json.Unmarshal(rows, &scores); err != nil {
+			return err
+		}
+		b.AA[category] = scores
+	}
+	b.DA = raw.DA
+	b.WeightedInputPrices = raw.WeightedInputPrices
+	b.CostPerRequest = raw.CostPerRequest
+	return nil
 }
 
 type AAScore struct {
@@ -41,26 +77,134 @@ type DARow struct {
 	AvgGenTimeMs float64 `json:"avg_generation_time_ms"`
 }
 
-// DACategories maps daData keys to friendly labels, in display order.
-var DACategories = []struct{ Key, Label string }{
-	{"models-website", "website"},
-	{"models-uicomponent", "ui component"},
-	{"models-dataviz", "data viz"},
-	{"models-gamedev", "game dev"},
-	{"models-3d", "3d"},
-	{"models-svg", "svg"},
-	{"models-codecategories", "code"},
-	{"models-asciiart", "ascii art"},
+var AACategories = []string{"intelligence", "coding", "agentic"}
+
+// AllAACategories keeps the familiar indexes first and appends any new
+// array-valued index OpenRouter adds to aaData.
+func (b *Benchmarks) AllAACategories() []string {
+	categories := make([]string, 0, len(b.AA))
+	for category := range b.AA {
+		categories = append(categories, category)
+	}
+	return orderAACategories(categories)
 }
 
-var AACategories = []string{"intelligence", "coding", "agentic"}
+func orderAACategories(categories []string) []string {
+	available := make(map[string]bool, len(categories))
+	for _, category := range categories {
+		available[category] = true
+	}
+	seen := make(map[string]bool, len(categories))
+	out := make([]string, 0, len(categories))
+	for _, category := range AACategories {
+		if available[category] {
+			out = append(out, category)
+			seen[category] = true
+		}
+	}
+	var extra []string
+	for _, category := range categories {
+		if !seen[category] {
+			extra = append(extra, category)
+		}
+	}
+	sort.Strings(extra)
+	return append(out, extra...)
+}
 
 func (c *Client) Benchmarks(force bool) (*Benchmarks, error) {
 	b, err := frontendGet[Benchmarks](c, "rank-bench", "/rankings/benchmarks", force)
 	if err != nil {
 		return nil, err
 	}
+	if len(b.AA) == 0 || len(b.DA) == 0 {
+		return nil, UnexpectedShapeError{
+			Endpoint: "/rankings/benchmarks",
+			Detail:   "expected non-empty Artificial Analysis and Design Arena leaderboards",
+		}
+	}
+	b.FetchedAt = c.cacheTime("rank-bench")
 	return &b, nil
+}
+
+// ModelBenchmarks is the benchmark metadata embedded in the official model
+// catalog. The rankings feed remains the richer source for full leaderboards.
+type ModelBenchmarks struct {
+	ArtificialAnalysis *ArtificialAnalysisScores `json:"artificial_analysis,omitempty"`
+	DesignArena        []DesignArenaScore        `json:"design_arena,omitempty"`
+}
+
+type ArtificialAnalysisScores struct {
+	Intelligence float64 `json:"intelligence_index"`
+	Coding       float64 `json:"coding_index"`
+	Agentic      float64 `json:"agentic_index"`
+}
+
+type DesignArenaScore struct {
+	Arena    string  `json:"arena"`
+	Category string  `json:"category"`
+	Elo      float64 `json:"elo"`
+	WinRate  float64 `json:"win_rate"`
+	Rank     int     `json:"rank"`
+}
+
+type DACategory struct {
+	Key      string
+	Arena    string
+	Category string
+	Label    string
+}
+
+// DACategories returns every arena/category published by OpenRouter. Categories
+// are grouped by arena and sorted so new upstream benchmarks appear
+// automatically without a release.
+func (b *Benchmarks) DACategories() []DACategory {
+	out := make([]DACategory, 0, len(b.DA))
+	for key := range b.DA {
+		arena, category, ok := strings.Cut(key, "-")
+		if !ok {
+			arena, category = "other", key
+		}
+		out = append(out, DACategory{
+			Key:      key,
+			Arena:    arena,
+			Category: category,
+			Label:    friendlyCategory(arena) + " · " + friendlyCategory(category),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Arena != out[j].Arena {
+			return arenaOrder(out[i].Arena) < arenaOrder(out[j].Arena)
+		}
+		return out[i].Category < out[j].Category
+	})
+	return out
+}
+
+func arenaOrder(arena string) string {
+	switch arena {
+	case "models":
+		return "0"
+	case "agents":
+		return "1"
+	default:
+		return "2" + arena
+	}
+}
+
+func friendlyCategory(s string) string {
+	replacer := strings.NewReplacer(
+		"uicomponent", "ui component",
+		"dataviz", "data viz",
+		"gamedev", "game dev",
+		"codecategories", "code",
+		"asciiart", "ascii art",
+		"graphicdesign", "graphic design",
+		"imageediting", "image editing",
+		"text-to-speech", "text to speech",
+		"agentic", "",
+	)
+	return strings.TrimSpace(replacer.Replace(s))
 }
 
 // ModelBench is everything the benchmark data knows about one model.
@@ -73,6 +217,14 @@ type ModelBench struct {
 
 func (mb *ModelBench) Empty() bool {
 	return len(mb.AA) == 0 && len(mb.DA) == 0 && mb.CostPerRequest == nil && mb.WeightedInputPrice == nil
+}
+
+func (mb *ModelBench) AACategories() []string {
+	categories := make([]string, 0, len(mb.AA))
+	for category := range mb.AA {
+		categories = append(categories, category)
+	}
+	return orderAACategories(categories)
 }
 
 // ForModel matches a catalog model against benchmark rows by id and canonical slug.
@@ -102,7 +254,7 @@ func (b *Benchmarks) ForModel(m Model) *ModelBench {
 			}
 		}
 	}
-	for _, dc := range DACategories {
+	for _, dc := range b.DACategories() {
 		for _, r := range b.DA[dc.Key] {
 			if match(r.Permaslug, r.OpenrouterID) {
 				mb.DA[dc.Label] = r

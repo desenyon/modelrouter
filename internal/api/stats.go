@@ -8,22 +8,24 @@ type CountItem struct {
 }
 
 type Stats struct {
-	TotalModels    int
-	TotalAuthors   int
-	TotalProviders int
-	FreeModels     int
-	ToolModels     int
-	ReasoningModels int
-	VisionModels   int
-	AudioModels    int
+	TotalModels          int
+	TextModels           int
+	NonTextModels        int
+	TotalAuthors         int
+	TotalProviders       int
+	FreeModels           int
+	ToolModels           int
+	ReasoningModels      int
+	VisionModels         int
+	AudioModels          int
 	MedianPromptPerM     float64
 	MedianCompletionPerM float64
 	MaxPromptPerM        float64
-	TopAuthors    []CountItem
-	PriceBuckets  []CountItem // prompt $/M distribution (paid models)
-	CtxBuckets    []CountItem
-	TopParams     []CountItem
-	Newest        []Model
+	TopAuthors           []CountItem
+	PriceBuckets         []CountItem // prompt $/M distribution (paid models)
+	CtxBuckets           []CountItem
+	TopParams            []CountItem
+	Newest               []Model
 }
 
 func ComputeStats(models []Model, providers []Provider) Stats {
@@ -59,6 +61,11 @@ func ComputeStats(models []Model, providers []Provider) Stats {
 		if m.IsFree() {
 			s.FreeModels++
 		}
+		if m.HasOutput("text") {
+			s.TextModels++
+		} else {
+			s.NonTextModels++
+		}
 		if m.HasParam("tools") {
 			s.ToolModels++
 		}
@@ -72,7 +79,7 @@ func ComputeStats(models []Model, providers []Provider) Stats {
 			s.AudioModels++
 		}
 		pp := m.Pricing.PromptPerM()
-		if !m.IsFree() {
+		if m.HasOutput("text") && !m.IsFree() {
 			promptPrices = append(promptPrices, pp)
 			completionPrices = append(completionPrices, m.Pricing.CompletionPerM())
 			for i, b := range priceBuckets {

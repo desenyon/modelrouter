@@ -91,7 +91,7 @@ func TestFullFlow(t *testing.T) {
 		ID: "acme/foo-large",
 		Endpoints: []api.Endpoint{{
 			ProviderName: "Acme Cloud", ContextLength: 1_000_000,
-			Pricing: api.Pricing{Prompt: "0.00001", Completion: "0.00005"},
+			Pricing:      api.Pricing{Prompt: "0.00001", Completion: "0.00005"},
 			UptimeLast1d: &up,
 		}},
 	}})
@@ -122,6 +122,7 @@ func TestFullFlow(t *testing.T) {
 		AA: map[string][]api.AAScore{
 			"intelligence": {{UID: "acme/foo-large-x", Permaslug: "acme/foo-large-x", HeuristicSlug: &slug, Name: "Foo Large", Score: 64.9}},
 			"coding":       {{UID: "acme/foo-large-x", Permaslug: "acme/foo-large-x", HeuristicSlug: &slug, Name: "Foo Large", Score: 57.2}},
+			"math":         {{UID: "acme/bar-mini", Permaslug: "acme/bar-mini", Name: "Bar Mini", Score: 81.0}},
 		},
 		DA: map[string][]api.DARow{
 			"models-website": {{OpenrouterID: "acme/foo-large", DisplayName: "Foo Large", Score: 1362, WinRate: 65.8}},
@@ -130,7 +131,7 @@ func TestFullFlow(t *testing.T) {
 	}})
 	pump(t, a, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'3'}})
 	out = a.View()
-	for _, want := range []string{"AA INTELLIGENCE", "64.9", "DESIGN ARENA", "COST PER REQUEST"} {
+	for _, want := range []string{"AA INTELLIGENCE", "AA MATH", "64.9", "DESIGN ARENA", "COST PER REQUEST"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("benchmarks tab missing %q:\n%s", want, out)
 		}
@@ -196,6 +197,57 @@ func TestFullFlow(t *testing.T) {
 	}
 }
 
+func TestRefreshGenerationAndStatePreservation(t *testing.T) {
+	a := NewApp(api.New())
+	pump(t, a,
+		tea.WindowSizeMsg{Width: 120, Height: 40},
+		dataMsg{models: testModels()},
+		splashDoneMsg{},
+		tea.KeyMsg{Type: tea.KeyDown},
+	)
+	selected := a.modelsView.Selected()
+	if selected == nil {
+		t.Fatal("expected a selected model")
+	}
+	selectedID := selected.ID
+
+	a.generation = 2
+	updated := testModels()
+	updated[0].Description = "fresh"
+	pump(t, a, dataMsg{models: updated, generation: 2})
+	if got := a.modelsView.Selected(); got == nil || got.ID != selectedID {
+		t.Fatalf("refresh lost selection: %#v", got)
+	}
+
+	stale := testModels()
+	stale[0].Description = "stale"
+	pump(t, a, dataMsg{models: stale, generation: 1})
+	if a.models[0].Description != "fresh" {
+		t.Fatal("older async response overwrote newer catalog data")
+	}
+}
+
+func TestFailedLiveRefreshKeepsPriorLeaderboardSnapshot(t *testing.T) {
+	a := NewApp(api.New())
+	pump(t, a,
+		tea.WindowSizeMsg{Width: 120, Height: 40},
+		dataMsg{models: testModels()},
+		splashDoneMsg{},
+		rankingsMsg{data: &api.Rankings{
+			ModelDays: []api.ModelDayStat{{Date: "2026-07-29", ModelPermaslug: "acme/foo", PromptTokens: 100}},
+		}},
+	)
+	a.generation = 1
+	pump(t, a,
+		rankingsMsg{err: fmt.Errorf("upstream down"), generation: 1},
+		tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'2'}},
+	)
+	out := a.View()
+	if !strings.Contains(out, "showing prior rankings snapshot") || !strings.Contains(out, "acme/foo") {
+		t.Fatalf("prior snapshot was not retained:\n%s", out)
+	}
+}
+
 func TestDetailScrolls(t *testing.T) {
 	a := NewApp(api.New())
 	pump(t, a,
@@ -251,10 +303,14 @@ func TestNarrowTerminal(t *testing.T) {
 	a := NewApp(api.New())
 	pump(t, a,
 		tea.WindowSizeMsg{Width: 70, Height: 20},
-		dataMsg{models: testModels(), providers: nil},
+		dataMsg{models: testModels(), providers: []api.Provider{{Name: "Acme Cloud", Slug: "acme"}}},
 		splashDoneMsg{},
 	)
 	if out := a.View(); !strings.Contains(out, "acme") {
 		t.Fatalf("narrow render broke:\n%s", out)
+	}
+	pump(t, a, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'4'}})
+	if out := a.View(); !strings.Contains(out, "Acme Cloud") {
+		t.Fatalf("narrow provider render broke:\n%s", out)
 	}
 }

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/table"
@@ -27,26 +28,91 @@ func NewProvidersView(providers []api.Provider, w, h int) ProvidersView {
 	v := ProvidersView{providers: providers, tbl: tbl}
 	v.SetSize(w, h)
 
-	rows := make([]table.Row, len(providers))
-	check := func(u *string) string {
-		if u != nil && *u != "" {
-			return "✓"
-		}
-		return "·"
+	v.setRows()
+	return v
+}
+
+func (v *ProvidersView) policy(p api.Provider) string {
+	if !p.PolicyAvailable {
+		return "unknown"
 	}
-	for i, p := range providers {
-		dc := strings.Join(p.Datacenters, ",")
-		if dc == "" {
-			dc = "-"
-		}
+	training := "no-train"
+	if p.DataPolicy.Training || p.DataPolicy.TrainingOpenRouter {
+		training = "trains"
+	}
+	retention := "no-log"
+	if p.DataPolicy.RetainsPrompts {
+		retention = "logs"
+	}
+	userID := "no-id"
+	if p.DataPolicy.RequiresUserIDs {
+		userID = "user-id"
+	}
+	flags := []string{training, retention, userID}
+	if p.ModerationRequired {
+		flags = append(flags, "moderated")
+	}
+	return strings.Join(flags, " ")
+}
+
+func (v *ProvidersView) compactPolicy(p api.Provider) string {
+	if !p.PolicyAvailable {
+		return "unknown"
+	}
+	training, retention, userID := "T-", "L-", "ID-"
+	if p.DataPolicy.Training || p.DataPolicy.TrainingOpenRouter {
+		training = "T+"
+	}
+	if p.DataPolicy.RetainsPrompts {
+		retention = "L+"
+	}
+	if p.DataPolicy.RequiresUserIDs {
+		userID = "ID+"
+	}
+	flags := []string{training, retention, userID}
+	if p.ModerationRequired {
+		flags = append(flags, "M")
+	}
+	return strings.Join(flags, " ")
+}
+
+func (v *ProvidersView) setRows() {
+	rows := make([]table.Row, len(v.providers))
+	for i, p := range v.providers {
 		hq := p.Headquarters
 		if hq == "" {
 			hq = "-"
 		}
-		rows[i] = table.Row{p.Name, p.Slug, hq, dc, check(p.PrivacyPolicyURL), check(p.TermsOfServiceURL), check(p.StatusPageURL)}
+		chat := "legacy"
+		if p.HasChatCompletions {
+			chat = "chat"
+		}
+		byok := "·"
+		if p.BYOKEnabled {
+			byok = "✓"
+		}
+		links := 0
+		for _, u := range []string{p.PrivacyURL(), p.TermsURL(), p.StatusURL()} {
+			if u != "" {
+				links++
+			}
+		}
+		if v.width < 110 {
+			rows[i] = table.Row{p.Label(), hq, chat, byok, v.compactPolicy(p)}
+			continue
+		}
+		rows[i] = table.Row{p.Label(), p.Slug, hq, chat, byok, v.policy(p), fmt.Sprintf("%d/3", links)}
 	}
 	v.tbl.SetRows(rows)
-	return v
+}
+
+func (v *ProvidersView) SetProviders(providers []api.Provider) {
+	cursor := v.tbl.Cursor()
+	v.providers = providers
+	v.setRows()
+	if cursor < len(providers) {
+		v.tbl.SetCursor(cursor)
+	}
 }
 
 func (v *ProvidersView) SetSize(w, h int) {
@@ -55,7 +121,22 @@ func (v *ProvidersView) SetSize(w, h int) {
 		h = 4
 	}
 	v.tbl.SetHeight(h - 2)
-	nameW := w - (18 + 6 + 24 + 8 + 5 + 7) - 16
+	if w < 110 {
+		nameW := w - 43
+		if nameW < 18 {
+			nameW = 18
+		}
+		v.tbl.SetColumns([]table.Column{
+			{Title: "PROVIDER", Width: nameW},
+			{Title: "HQ", Width: 4},
+			{Title: "API", Width: 7},
+			{Title: "BYOK", Width: 5},
+			{Title: "POLICY", Width: 20},
+		})
+		v.setRows()
+		return
+	}
+	nameW := w - (20 + 4 + 7 + 5 + 32 + 7) - 16
 	if nameW < 18 {
 		nameW = 18
 	}
@@ -64,13 +145,14 @@ func (v *ProvidersView) SetSize(w, h int) {
 	}
 	v.tbl.SetColumns([]table.Column{
 		{Title: "PROVIDER", Width: nameW},
-		{Title: "SLUG", Width: 18},
-		{Title: "HQ", Width: 6},
-		{Title: "DATACENTERS", Width: 24},
-		{Title: "PRIVACY", Width: 8},
-		{Title: "TOS", Width: 5},
-		{Title: "STATUS", Width: 7},
+		{Title: "SLUG", Width: 20},
+		{Title: "HQ", Width: 4},
+		{Title: "API", Width: 7},
+		{Title: "BYOK", Width: 5},
+		{Title: "DATA POLICY", Width: 32},
+		{Title: "LINKS", Width: 7},
 	})
+	v.setRows()
 }
 
 func (v *ProvidersView) Update(msg tea.Msg) tea.Cmd {
@@ -92,6 +174,10 @@ func (v *ProvidersView) HandleMouse(msg tea.MouseMsg) {
 }
 
 func (v *ProvidersView) View() string {
-	header := " " + styleDim.Render("inference providers routed through OpenRouter")
+	explanation := "trains/logs/user-id mark provider use; no-* marks the opposite"
+	if v.width < 110 {
+		explanation = "T/L/ID: +=used, -=not used · M=moderated"
+	}
+	header := " " + styleDim.Render(fmt.Sprintf("%d providers · %s", len(v.providers), explanation))
 	return header + "\n" + v.tbl.View()
 }

@@ -9,8 +9,16 @@ import (
 // FmtPrice renders USD-per-million values compactly; zero is "free".
 func FmtPrice(perM float64) string {
 	switch {
+	case perM < 0:
+		return "dynamic"
 	case perM == 0:
 		return "free"
+	case perM >= 100_000:
+		return fmt.Sprintf("$%.0fk", perM/1_000)
+	case perM >= 10_000:
+		return fmt.Sprintf("$%.1fk", perM/1_000)
+	case perM >= 1_000:
+		return fmt.Sprintf("$%.2fk", perM/1_000)
 	case perM >= 100:
 		return fmt.Sprintf("$%.0f", perM)
 	case perM >= 1:

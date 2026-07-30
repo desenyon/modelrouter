@@ -108,8 +108,9 @@ func (d *DetailView) contentWithSpinner(spin string) string {
 		b.WriteString(wrap.PaddingLeft(1).Foreground(cText).Render(m.Description) + "\n\n")
 	}
 
-	b.WriteString(" " + styleSection.Render("PRICING") + styleDim.Render("  ($ per million tokens)") + "\n")
-	b.WriteString(d.pricingGrid(m.Pricing) + "\n\n")
+	b.WriteString(" " + styleSection.Render("PRICING") +
+		styleDim.Render("  (/M = million tokens · /Mu = million upstream billing units)") + "\n")
+	b.WriteString(d.pricingGrid(m) + "\n\n")
 
 	if d.bench != nil && !d.bench.Empty() {
 		b.WriteString(d.benchSection() + "\n")
@@ -153,7 +154,7 @@ func (d *DetailView) benchSection() string {
 
 	if len(d.bench.AA) > 0 {
 		var parts []string
-		for _, cat := range api.AACategories {
+		for _, cat := range d.bench.AACategories() {
 			if score, ok := d.bench.AA[cat]; ok {
 				parts = append(parts, " "+styleDim.Render(cat+" ")+
 					lipgloss.NewStyle().Foreground(cYellow).Bold(true).Render(fmt.Sprintf("%.1f", score))+
@@ -165,12 +166,16 @@ func (d *DetailView) benchSection() string {
 
 	if len(d.bench.DA) > 0 {
 		var parts []string
-		for _, dc := range api.DACategories {
-			if r, ok := d.bench.DA[dc.Label]; ok {
-				parts = append(parts, " "+styleDim.Render(dc.Label+" ")+
-					lipgloss.NewStyle().Foreground(cPink).Bold(true).Render(fmt.Sprintf("%.0f", r.Score))+
-					styleDim.Render(fmt.Sprintf(" (%.0f%% win)", r.WinRate)))
-			}
+		labels := make([]string, 0, len(d.bench.DA))
+		for label := range d.bench.DA {
+			labels = append(labels, label)
+		}
+		sort.Strings(labels)
+		for _, label := range labels {
+			r := d.bench.DA[label]
+			parts = append(parts, " "+styleDim.Render(label+" ")+
+				lipgloss.NewStyle().Foreground(cPink).Bold(true).Render(fmt.Sprintf("%.0f", r.Score))+
+				styleDim.Render(fmt.Sprintf(" (%.0f%% win)", r.WinRate)))
 		}
 		wrap := lipgloss.NewStyle().Width(d.width - 2)
 		b.WriteString(wrap.Render(styleDim.Render(" design arena elo:")+strings.Join(parts, styleDim.Render("  ·"))) + "\n")
@@ -191,11 +196,12 @@ func (d *DetailView) benchSection() string {
 	return b.String()
 }
 
-func (d *DetailView) pricingGrid(p api.Pricing) string {
+func (d *DetailView) pricingGrid(m api.Model) string {
+	p := m.Pricing
 	type cell struct{ label, val string }
 	cells := []cell{
-		{"prompt", api.FmtPrice(p.PromptPerM())},
-		{"completion", api.FmtPrice(p.CompletionPerM())},
+		{"input", m.InputPrice()},
+		{"output", m.OutputPrice()},
 	}
 	if p.InputCacheRead != "" {
 		cells = append(cells, cell{"cache read", api.FmtPrice(p.CacheReadPerM())})
@@ -206,11 +212,23 @@ func (d *DetailView) pricingGrid(p api.Pricing) string {
 	if p.InternalReasoning != "" && p.InternalReasoning != "0" {
 		cells = append(cells, cell{"reasoning", api.FmtPrice(perM(p.InternalReasoning))})
 	}
+	if p.Request != "" && p.Request != "0" {
+		cells = append(cells, cell{"request", "$" + trimZeros(p.Request)})
+	}
 	if p.Image != "" && p.Image != "0" {
-		cells = append(cells, cell{"image (each)", "$" + trimZeros(p.Image)})
+		cells = append(cells, cell{"image input", "$" + trimZeros(p.Image)})
+	}
+	if p.ImageToken != "" && p.ImageToken != "0" {
+		cells = append(cells, cell{"image token", "$" + trimZeros(p.ImageToken)})
+	}
+	if p.ImageOutput != "" && p.ImageOutput != "0" {
+		cells = append(cells, cell{"image output", "$" + trimZeros(p.ImageOutput)})
 	}
 	if p.Audio != "" && p.Audio != "0" {
 		cells = append(cells, cell{"audio", "$" + trimZeros(p.Audio)})
+	}
+	if p.AudioOutput != "" && p.AudioOutput != "0" {
+		cells = append(cells, cell{"audio output", "$" + trimZeros(p.AudioOutput)})
 	}
 	if p.WebSearch != "" && p.WebSearch != "0" {
 		cells = append(cells, cell{"web search (each)", "$" + trimZeros(p.WebSearch)})
@@ -245,7 +263,7 @@ func (d *DetailView) endpointsTable() string {
 	t := lgtable.New().
 		Border(lipgloss.RoundedBorder()).
 		BorderStyle(lipgloss.NewStyle().Foreground(cFaint)).
-		Headers("PROVIDER", "QUANT", "CTX", "MAX OUT", "IN $/M", "OUT $/M", "UPTIME 1D", "LATENCY", "TPS").
+		Headers("PROVIDER", "QUANT", "CTX", "MAX OUT", "INPUT", "OUTPUT", "UPTIME 1D", "LATENCY", "TPS").
 		StyleFunc(func(row, col int) lipgloss.Style {
 			if row == lgtable.HeaderRow {
 				return lipgloss.NewStyle().Foreground(cPrimary).Bold(true).Padding(0, 1)
@@ -274,8 +292,10 @@ func (d *DetailView) endpointsTable() string {
 		if quant == "" || quant == "unknown" {
 			quant = "-"
 		}
+		endpointModel := d.model
+		endpointModel.Pricing = e.Pricing
 		t.Row(e.ProviderName, quant, api.FmtCtx(e.ContextLength), maxOut,
-			api.FmtPrice(e.Pricing.PromptPerM()), api.FmtPrice(e.Pricing.CompletionPerM()), up, lat, tps)
+			endpointModel.InputPrice(), endpointModel.OutputPrice(), up, lat, tps)
 	}
 	return t.Render()
 }

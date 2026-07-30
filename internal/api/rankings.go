@@ -11,25 +11,25 @@ import (
 
 // The rankings endpoints are OpenRouter's unofficial frontend API — the same
 // one the openrouter.ai rankings page calls. Shapes may change without notice.
-const frontendBaseURL = "https://openrouter.ai/api/frontend"
+const frontendBaseURL = "https://openrouter.ai/api/frontend/v1"
 
 // RankingsTTL is shorter than the catalog TTL: leaderboards move all day.
 const RankingsTTL = 5 * time.Minute
 
 // ModelDayStat is one model-variant's usage for one day.
 type ModelDayStat struct {
-	Date              string   `json:"date"`
-	ModelPermaslug    string   `json:"model_permaslug"`
-	Variant           string   `json:"variant"`
-	VariantPermaslug  string   `json:"variant_permaslug"`
-	CompletionTokens  int64    `json:"total_completion_tokens"`
-	PromptTokens      int64    `json:"total_prompt_tokens"`
-	ReasoningTokens   int64    `json:"total_native_tokens_reasoning"`
-	CachedTokens      int64    `json:"total_native_tokens_cached"`
-	Requests          int64    `json:"count"`
-	ToolCalls         int64    `json:"total_tool_calls"`
-	ToolCallErrors    int64    `json:"requests_with_tool_call_errors"`
-	Change            *float64 `json:"change"`
+	Date             string   `json:"date"`
+	ModelPermaslug   string   `json:"model_permaslug"`
+	Variant          string   `json:"variant"`
+	VariantPermaslug string   `json:"variant_permaslug"`
+	CompletionTokens int64    `json:"total_completion_tokens"`
+	PromptTokens     int64    `json:"total_prompt_tokens"`
+	ReasoningTokens  int64    `json:"total_native_tokens_reasoning"`
+	CachedTokens     int64    `json:"total_native_tokens_cached"`
+	Requests         int64    `json:"count"`
+	ToolCalls        int64    `json:"total_tool_calls"`
+	ToolCallErrors   int64    `json:"requests_with_tool_call_errors"`
+	Change           *float64 `json:"change"`
 }
 
 func (s ModelDayStat) TotalTokens() int64 { return s.PromptTokens + s.CompletionTokens }
@@ -102,17 +102,33 @@ type Rankings struct {
 
 func frontendGet[T any](c *Client, name, path string, force bool) (T, error) {
 	var zero T
-	b, err := c.cachedFetchURL(name, frontendBaseURL+path, force, RankingsTTL)
+	b, err := c.cachedFetchURL(name, c.frontendBaseURL+path, force, RankingsTTL)
 	if err != nil {
 		return zero, err
 	}
-	var env struct {
-		Data T `json:"data"`
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(b, &object); err == nil {
+		if data, ok := object["data"]; ok {
+			if len(data) == 0 || string(data) == "null" {
+				return zero, UnexpectedShapeError{Endpoint: path, Detail: "data is null"}
+			}
+			if err := json.Unmarshal(data, &zero); err != nil {
+				return zero, fmt.Errorf("%s data: %w", path, err)
+			}
+			return zero, nil
+		}
 	}
-	if err := json.Unmarshal(b, &env); err != nil {
+	if err := json.Unmarshal(b, &zero); err != nil {
 		return zero, fmt.Errorf("%s: %w", path, err)
 	}
-	return env.Data, nil
+	return zero, nil
+}
+
+func requireRows[T any](path string, rows []T) error {
+	if len(rows) == 0 {
+		return UnexpectedShapeError{Endpoint: path, Detail: "expected a non-empty result"}
+	}
+	return nil
 }
 
 func (c *Client) Rankings(force bool) (*Rankings, error) {
@@ -120,20 +136,38 @@ func (c *Client) Rankings(force bool) (*Rankings, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := requireRows("/rankings/models", modelDays); err != nil {
+		return nil, err
+	}
 	apps, err := frontendGet[AppRankings](c, "rank-apps", "/rankings/apps", force)
 	if err != nil {
 		return nil, err
 	}
+	if len(apps.Day) == 0 && len(apps.Week) == 0 && len(apps.Month) == 0 {
+		return nil, UnexpectedShapeError{Endpoint: "/rankings/apps", Detail: "expected at least one populated period"}
+	}
 	share, err := frontendGet[[]SharePoint](c, "rank-share", "/rankings/market-share", force)
 	if err != nil {
+		return nil, err
+	}
+	if err := requireRows("/rankings/market-share", share); err != nil {
 		return nil, err
 	}
 	perf, err := frontendGet[[]PerfRow](c, "rank-perf", "/rankings/performance", force)
 	if err != nil {
 		return nil, err
 	}
+	if err := requireRows("/rankings/performance", perf); err != nil {
+		return nil, err
+	}
+	fetchedAt := c.cacheTime("rank-models")
+	for _, name := range []string{"rank-apps", "rank-share", "rank-perf"} {
+		if t := c.cacheTime(name); t.After(fetchedAt) {
+			fetchedAt = t
+		}
+	}
 	return &Rankings{ModelDays: modelDays, Apps: apps, MarketShare: share,
-		Performance: perf, FetchedAt: time.Now()}, nil
+		Performance: perf, FetchedAt: fetchedAt}, nil
 }
 
 // TopModels aggregates the latest day's per-variant stats into a leaderboard.

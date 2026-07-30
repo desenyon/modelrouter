@@ -28,9 +28,10 @@ const (
 var tabNames = []string{"Models", "Rankings", "Benchmarks", "Providers", "Stats"}
 
 type dataMsg struct {
-	models    []api.Model
-	providers []api.Provider
-	err       error
+	models     []api.Model
+	providers  []api.Provider
+	err        error
+	generation uint64
 }
 
 type endpointsMsg struct {
@@ -40,13 +41,15 @@ type endpointsMsg struct {
 }
 
 type rankingsMsg struct {
-	data *api.Rankings
-	err  error
+	data       *api.Rankings
+	err        error
+	generation uint64
 }
 
 type benchMsg struct {
-	data *api.Benchmarks
-	err  error
+	data       *api.Benchmarks
+	err        error
+	generation uint64
 }
 
 type rankingsTickMsg struct{}
@@ -73,7 +76,9 @@ type App struct {
 	prog          progress.Model
 	phase         int
 	flash         string
+	flashOK       bool
 	err           error
+	generation    uint64
 
 	models      []api.Model
 	providers   []api.Provider
@@ -105,17 +110,17 @@ func Run(client *api.Client) error {
 	return err
 }
 
-func (a *App) loadData(force bool) tea.Cmd {
+func (a *App) loadData(force bool, generation uint64) tea.Cmd {
 	return func() tea.Msg {
 		models, err := a.client.Models(force)
 		if err != nil {
-			return dataMsg{err: err}
+			return dataMsg{err: err, generation: generation}
 		}
 		providers, err := a.client.Providers(force)
 		if err != nil {
-			return dataMsg{err: err}
+			return dataMsg{err: err, generation: generation}
 		}
-		return dataMsg{models: models, providers: providers}
+		return dataMsg{models: models, providers: providers, generation: generation}
 	}
 }
 
@@ -126,23 +131,23 @@ func (a *App) fetchEndpoints(id string) tea.Cmd {
 	}
 }
 
-func (a *App) loadRankings(force bool) tea.Cmd {
+func (a *App) loadRankings(force bool, generation uint64) tea.Cmd {
 	return func() tea.Msg {
 		r, err := a.client.Rankings(force)
-		return rankingsMsg{data: r, err: err}
+		return rankingsMsg{data: r, err: err, generation: generation}
 	}
 }
 
-func (a *App) loadBench(force bool) tea.Cmd {
+func (a *App) loadBench(force bool, generation uint64) tea.Cmd {
 	return func() tea.Msg {
 		b, err := a.client.Benchmarks(force)
-		return benchMsg{data: b, err: err}
+		return benchMsg{data: b, err: err, generation: generation}
 	}
 }
 
 func (a *App) Init() tea.Cmd {
-	// rankings are always fetched fresh on open, then re-fetched every RankingsTTL
-	return tea.Batch(a.spin.Tick, a.loadData(false), a.loadRankings(true), a.loadBench(false),
+	// Every live surface is refreshed on open and every RankingsTTL.
+	return tea.Batch(a.spin.Tick, a.loadData(false, a.generation), a.loadRankings(true, a.generation), a.loadBench(true, a.generation),
 		rankingsTick(), gradTick(), a.prog.SetPercent(0.25))
 }
 
@@ -171,18 +176,32 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case dataMsg:
+		if msg.generation < a.generation {
+			return a, nil
+		}
 		if msg.err != nil {
 			a.loading = false
-			a.err = msg.err
+			if len(a.models) == 0 {
+				a.err = msg.err
+			} else {
+				return a, a.setErrorFlash("catalog refresh failed · showing prior data")
+			}
 			return a, nil
 		}
 		a.err = nil
+		a.flash = ""
+		hadData := len(a.models) > 0 || len(a.providers) > 0
 		a.models, a.providers = msg.models, msg.providers
 		w, h := a.contentSize()
-		a.modelsView = NewModelsView(a.models, w, h)
-		a.rankingsView = NewRankingsView(w, h)
-		a.benchView = NewBenchView(w, h)
-		a.providersView = NewProvidersView(a.providers, w, h)
+		if hadData {
+			a.modelsView.SetModels(a.models)
+			a.providersView.SetProviders(a.providers)
+		} else {
+			a.modelsView = NewModelsView(a.models, w, h)
+			a.rankingsView = NewRankingsView(w, h)
+			a.benchView = NewBenchView(w, h)
+			a.providersView = NewProvidersView(a.providers, w, h)
+		}
 		a.statsView = NewStatsView(api.ComputeStats(a.models, a.providers), w, h)
 		if a.rankingsSet {
 			a.rankingsView.SetData(a.rankings, a.rankingsErr)
@@ -199,11 +218,27 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case rankingsMsg:
+		if msg.generation < a.generation {
+			return a, nil
+		}
+		if msg.err != nil && a.rankings != nil {
+			a.rankingsErr, a.rankingsSet = msg.err, true
+			a.rankingsView.SetData(a.rankings, msg.err)
+			return a, nil
+		}
 		a.rankings, a.rankingsErr, a.rankingsSet = msg.data, msg.err, true
 		a.rankingsView.SetData(msg.data, msg.err)
 		return a, nil
 
 	case benchMsg:
+		if msg.generation < a.generation {
+			return a, nil
+		}
+		if msg.err != nil && a.bench != nil {
+			a.benchErr, a.benchSet = msg.err, true
+			a.benchView.SetData(a.bench, msg.err)
+			return a, nil
+		}
 		a.bench, a.benchErr, a.benchSet = msg.data, msg.err, true
 		a.benchView.SetData(msg.data, msg.err)
 		if a.detail != nil && msg.data != nil {
@@ -212,7 +247,10 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case rankingsTickMsg:
-		return a, tea.Batch(a.loadRankings(true), rankingsTick())
+		a.generation++
+		generation := a.generation
+		return a, tea.Batch(a.loadData(true, generation), a.loadRankings(true, generation),
+			a.loadBench(true, generation), rankingsTick())
 
 	case gradTickMsg:
 		if a.loading {
@@ -223,6 +261,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case flashClearMsg:
 		a.flash = ""
+		a.flashOK = false
 		return a, nil
 
 	case progress.FrameMsg:
@@ -292,6 +331,13 @@ func (a *App) selectedModelID() string {
 
 func (a *App) setFlash(s string) tea.Cmd {
 	a.flash = s
+	a.flashOK = true
+	return tea.Tick(1500*time.Millisecond, func(time.Time) tea.Msg { return flashClearMsg{} })
+}
+
+func (a *App) setErrorFlash(s string) tea.Cmd {
+	a.flash = s
+	a.flashOK = false
 	return tea.Tick(1500*time.Millisecond, func(time.Time) tea.Msg { return flashClearMsg{} })
 }
 
@@ -361,8 +407,10 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 	case "R":
 		a.loading = true
+		a.generation++
+		generation := a.generation
 		return a, tea.Batch(a.spin.Tick, gradTick(), a.prog.SetPercent(0.25),
-			a.loadData(true), a.loadRankings(true), a.loadBench(true))
+			a.loadData(true, generation), a.loadRankings(true, generation), a.loadBench(true, generation))
 	case "o":
 		if id := a.selectedModelID(); id != "" {
 			openModelPage(id)
@@ -485,9 +533,14 @@ func (a *App) statusBar() string {
 			info = "loading leaderboards..."
 		}
 	case a.tab == tabBench:
-		info = "Artificial Analysis + Design Arena"
+		if a.bench != nil && !a.bench.FetchedAt.IsZero() {
+			info = fmt.Sprintf("%d benchmark categories · updated %s",
+				len(a.bench.AllAACategories())+len(a.bench.DACategories()), a.bench.FetchedAt.Format("15:04:05"))
+		} else {
+			info = "loading benchmark leaderboards..."
+		}
 	case a.tab == tabProviders:
-		info = fmt.Sprintf("%d inference providers", len(a.providers))
+		info = fmt.Sprintf("%d providers · routing + data policies", len(a.providers))
 	default:
 		info = "catalog analytics"
 	}
@@ -495,7 +548,11 @@ func (a *App) statusBar() string {
 
 	var right string
 	if a.flash != "" {
-		right = styleSegFlash.Render("✓ " + a.flash)
+		prefix := "! "
+		if a.flashOK {
+			prefix = "✓ "
+		}
+		right = styleSegFlash.Render(prefix + a.flash)
 	} else {
 		switch {
 		case a.detail != nil:
@@ -503,7 +560,7 @@ func (a *App) statusBar() string {
 		case a.tab == tabRankings:
 			right = styleSegInfo.Render(fmt.Sprintf("%3.0f%% · refresh 5m", a.rankingsView.ScrollPercent()*100))
 		case a.tab == tabBench:
-			right = styleSegInfo.Render(fmt.Sprintf("%3.0f%%", a.benchView.ScrollPercent()*100))
+			right = styleSegInfo.Render(fmt.Sprintf("%3.0f%% · refresh 5m", a.benchView.ScrollPercent()*100))
 		case a.tab == tabStats:
 			right = styleSegInfo.Render(fmt.Sprintf("%3.0f%%", a.statsView.ScrollPercent()*100))
 		default:

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -10,7 +11,10 @@ import (
 )
 
 func PrintBenchmarks(b *api.Benchmarks) {
-	for _, cat := range api.AACategories {
+	if !b.FetchedAt.IsZero() {
+		fmt.Println(dimStyle.Render(" live OpenRouter benchmark feed · updated " + b.FetchedAt.Format("2006-01-02 15:04:05")))
+	}
+	for _, cat := range b.AllAACategories() {
 		rows := b.TopAA(cat)
 		if len(rows) == 0 {
 			continue
@@ -32,7 +36,7 @@ func PrintBenchmarks(b *api.Benchmarks) {
 
 	fmt.Println()
 	fmt.Println(" " + titleStyle.Foreground(cPrimary).Render("design arena") + dimStyle.Render("  (elo · win rate, top 5 per category)"))
-	for _, dc := range api.DACategories {
+	for _, dc := range b.DACategories() {
 		rows := b.TopDA(dc.Key)
 		if len(rows) == 0 {
 			continue
@@ -44,7 +48,7 @@ func PrintBenchmarks(b *api.Benchmarks) {
 		for _, r := range rows {
 			parts = append(parts, fmt.Sprintf("%s %.0f (%.0f%%)", r.DisplayName, r.Score, r.WinRate))
 		}
-		fmt.Printf("   %-13s %s\n", dc.Label, dimStyle.Render(strings.Join(parts, " · ")))
+		fmt.Printf("   %-28s %s\n", dc.Label, dimStyle.Render(strings.Join(parts, " · ")))
 	}
 
 	cheap := b.CheapestRequests()
@@ -67,7 +71,7 @@ func PrintModelBench(mb *api.ModelBench) {
 		return
 	}
 	var parts []string
-	for _, cat := range api.AACategories {
+	for _, cat := range mb.AACategories() {
 		if s, ok := mb.AA[cat]; ok {
 			parts = append(parts, fmt.Sprintf("%s %.1f", cat, s))
 		}
@@ -76,10 +80,14 @@ func PrintModelBench(mb *api.ModelBench) {
 		fmt.Println(" " + titleStyle.Foreground(cPrimary).Render("benchmarks: ") + dimStyle.Render("AA ") + strings.Join(parts, " · "))
 	}
 	var da []string
-	for _, dc := range api.DACategories {
-		if r, ok := mb.DA[dc.Label]; ok {
-			da = append(da, fmt.Sprintf("%s %.0f (%.0f%%)", dc.Label, r.Score, r.WinRate))
-		}
+	keys := make([]string, 0, len(mb.DA))
+	for label := range mb.DA {
+		keys = append(keys, label)
+	}
+	sort.Strings(keys)
+	for _, label := range keys {
+		r := mb.DA[label]
+		da = append(da, fmt.Sprintf("%s %.0f (%.0f%%)", label, r.Score, r.WinRate))
 	}
 	if len(da) > 0 {
 		fmt.Println("             " + dimStyle.Render("arena ") + strings.Join(da, " · "))

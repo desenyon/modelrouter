@@ -81,24 +81,34 @@ func (v *BenchView) aaChart(category string, color lipgloss.Color) string {
 }
 
 func (v *BenchView) content() string {
-	if v.err != nil {
+	if v.err != nil && v.bench == nil {
 		return "\n " + styleErr.Render("benchmarks unavailable: ") + v.err.Error() +
-			"\n " + styleDim.Render("(unofficial frontend API — may have changed)")
+			"\n " + styleDim.Render("(last cached result unavailable too — press R to retry)")
 	}
 	if v.bench == nil {
 		return "\n " + styleDim.Render("loading benchmarks...")
 	}
 	var b strings.Builder
-	b.WriteString(" " + styleDim.Render("Artificial Analysis scores + Design Arena elo, as shown on openrouter.ai/rankings") + "\n\n")
+	if v.err != nil {
+		b.WriteString(" " + styleErr.Render("live refresh failed · showing prior benchmark snapshot") + "\n")
+	}
+	categories := v.bench.DACategories()
+	aaCategories := v.bench.AllAACategories()
+	freshness := "live OpenRouter feed"
+	if !v.bench.FetchedAt.IsZero() {
+		freshness += " · updated " + v.bench.FetchedAt.Format("15:04:05")
+	}
+	b.WriteString(" " + styleDim.Render(fmt.Sprintf(
+		"%s · %d AA indexes · %d Design Arena categories", freshness, len(aaCategories), len(categories))) + "\n\n")
 
 	hues := []lipgloss.Color{cPrimary, cAccent, cPink}
-	for i, cat := range api.AACategories {
+	for i, cat := range aaCategories {
 		b.WriteString(v.aaChart(cat, hues[i%len(hues)]) + "\n")
 	}
 
 	b.WriteString(" " + styleSection.Render("DESIGN ARENA") + styleDim.Render("  (elo · win rate)") + "\n")
 	var cols []string
-	for _, dc := range api.DACategories {
+	for _, dc := range categories {
 		rows := v.bench.TopDA(dc.Key)
 		if len(rows) == 0 {
 			continue
@@ -110,13 +120,13 @@ func (v *BenchView) content() string {
 				break
 			}
 			col.WriteString(fmt.Sprintf("%s %s\n",
-				lipgloss.NewStyle().Foreground(cCyan).Width(26).Render(truncate(r.DisplayName, 26)),
+				lipgloss.NewStyle().Foreground(cCyan).Width(28).Render(truncate(r.DisplayName, 28)),
 				styleDim.Render(fmt.Sprintf("%4.0f · %4.1f%%", r.Score, r.WinRate))))
 		}
-		cols = append(cols, lipgloss.NewStyle().MarginRight(3).MarginBottom(1).Render(col.String()))
+		cols = append(cols, lipgloss.NewStyle().Width(48).MarginRight(2).MarginBottom(1).Render(col.String()))
 	}
 	// flow the category columns into rows that fit the width
-	perRow := v.width / 44
+	perRow := v.width / 50
 	if perRow < 1 {
 		perRow = 1
 	}

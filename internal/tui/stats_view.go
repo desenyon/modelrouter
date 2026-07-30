@@ -91,7 +91,7 @@ func (v *StatsView) content() string {
 	var b strings.Builder
 
 	cards := lipgloss.JoinHorizontal(lipgloss.Top,
-		statCard("models", fmt.Sprintf("%d", s.TotalModels), cPrimary),
+		statCard(fmt.Sprintf("models · %d text", s.TextModels), fmt.Sprintf("%d", s.TotalModels), cPrimary),
 		statCard("authors", fmt.Sprintf("%d", s.TotalAuthors), cCyan),
 		statCard("providers", fmt.Sprintf("%d", s.TotalProviders), cPink),
 		statCard("free", fmt.Sprintf("%d", s.FreeModels), cAccent),
@@ -102,7 +102,7 @@ func (v *StatsView) content() string {
 	)
 	b.WriteString(cards + "\n")
 
-	b.WriteString(" " + styleSection.Render("PRICING (paid models, prompt $/M)") + "  " +
+	b.WriteString(" " + styleSection.Render("PRICING (paid text models, prompt $/M tokens)") + "  " +
 		styleDim.Render(fmt.Sprintf("median %s in / %s out · max %s",
 			api.FmtPrice(s.MedianPromptPerM), api.FmtPrice(s.MedianCompletionPerM), api.FmtPrice(s.MaxPromptPerM))) + "\n\n")
 
@@ -122,7 +122,7 @@ func (v *StatsView) content() string {
 
 	b.WriteString(" " + styleSection.Render("NEWEST MODELS") + "\n")
 	for _, m := range s.Newest {
-		price := api.FmtPrice(m.Pricing.PromptPerM()) + " / " + api.FmtPrice(m.Pricing.CompletionPerM())
+		price := m.InputPrice() + " / " + m.OutputPrice()
 		b.WriteString(fmt.Sprintf(" %s  %s %s %s\n",
 			styleDim.Render(m.CreatedTime().Format("2006-01-02")),
 			lipgloss.NewStyle().Foreground(cCyan).Render(lipgloss.NewStyle().Width(44).Render(m.ID)),
