@@ -15,7 +15,7 @@ Sleep 1s
 
 Type "/"
 Sleep 500ms
-Type "fable"
+Type "gpt-image-2"
 Sleep 1.5s
 Enter
 Sleep 500ms
@@ -37,6 +37,11 @@ Sleep 1s
 Type "3"
 Sleep 1.5s
 Screenshot assets/benchmarks.png
+Sleep 1s
+
+Type "4"
+Sleep 1.5s
+Screenshot assets/providers.png
 Sleep 1s
 
 Type "5"

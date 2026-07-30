@@ -20,11 +20,16 @@ market share, and AI benchmarks from openrouter.ai — without leaving your shel
 
 ## Highlights
 
-- **337+ models** with pricing, context windows, modalities, and capability flags
+- **The complete model catalog** — text, image, audio, speech, transcription,
+  video, embedding, and reranking models with modality-aware pricing
 - **Live rankings** — token-usage leaderboards, author market share, top apps, and
   p50 latency/throughput, auto-refreshed every 5 minutes
-- **AI benchmarks** — Artificial Analysis intelligence/coding/agentic scores and
-  Design Arena elo, embedded right into each model's detail view
+- **AI benchmarks** — every Artificial Analysis index and Design Arena category
+  currently published by OpenRouter, discovered dynamically and embedded into
+  each model's detail view
+- **Provider intelligence** — the complete provider directory with routing
+  capabilities, BYOK, moderation, data-retention/training policy, and public
+  legal/status links
 - **Per-provider endpoints** — quantization, uptime, latency, and throughput for
   every provider serving a model
 - **Fully scriptable** — every view is also a subcommand with `--json` output
@@ -73,10 +78,19 @@ performance leaders. Fetched fresh on open, re-fetched every 5 minutes.
 
 ### ▸ Benchmarks
 
-Artificial Analysis intelligence / coding / agentic leaderboards, Design Arena elo
-and win rates across 8 design categories, and estimated cost per request.
+Every Artificial Analysis leaderboard and Design Arena category in OpenRouter's
+current feed, plus elo, win rates, and estimated cost per request. New upstream
+categories appear automatically.
 
 <img src="assets/benchmarks.png" alt="benchmarks tab" width="900">
+
+### ▸ Providers
+
+The complete OpenRouter provider directory with chat/API capabilities, BYOK,
+training and prompt-retention policy signals, user-ID requirements, regions,
+and public legal/status links.
+
+<img src="assets/providers.png" alt="providers tab" width="900">
 
 ### ▸ Stats
 
@@ -111,7 +125,9 @@ modelrouter stats                           # catalog analytics
 modelrouter export --endpoints --out all.json   # dump everything
 ```
 
-Add `--json` to any of them. `--refresh` bypasses the cache.
+Add `--json` to any of them. `--refresh` strictly bypasses the cache and returns
+an error if live data cannot be fetched; ordinary reads may use a stale snapshot
+during an outage.
 
 ## Keymap
 
@@ -137,7 +153,7 @@ Add `--json` to any of them. `--refresh` bypasses the cache.
 
 | Endpoint | Data |
 |----------|------|
-| `/api/v1/models` | full model catalog |
+| `/api/v1/models?output_modalities=all` | complete multimodal model catalog |
 | `/api/v1/models/{id}/endpoints` | per-provider endpoints, uptime, latency |
 | `/api/v1/providers` | provider directory |
 
@@ -145,15 +161,17 @@ Add `--json` to any of them. `--refresh` bypasses the cache.
 
 | Endpoint | Data |
 |----------|------|
-| `/api/frontend/rankings/models` | daily token usage per model |
-| `/api/frontend/rankings/apps` | top apps by day/week/month |
-| `/api/frontend/rankings/market-share` | weekly author token share |
-| `/api/frontend/rankings/performance` | p50 latency/throughput |
-| `/api/frontend/rankings/benchmarks` | Artificial Analysis + Design Arena + request costs |
+| `/api/frontend/v1/rankings/models` | daily token usage per model |
+| `/api/frontend/v1/rankings/apps` | top apps by day/week/month |
+| `/api/frontend/v1/rankings/market-share` | weekly author token share |
+| `/api/frontend/v1/rankings/performance` | p50 latency/throughput |
+| `/api/frontend/v1/rankings/benchmarks` | Artificial Analysis + Design Arena + request costs |
+| `/api/frontend/v1/providers` | routing capabilities and public provider policy metadata |
 
-The frontend endpoints are undocumented and may change; if a rankings view breaks,
-the rest of the CLI keeps working. The catalog is cached for 1 hour and rankings
-for 5 minutes under your OS cache directory (`modelrouter clear-cache` wipes it).
+The frontend endpoints are undocumented and may change; responses are
+shape-validated and the official provider feed remains the fallback. Live
+surfaces refresh every 5 minutes and are cached under your OS cache directory
+(`modelrouter clear-cache` wipes it).
 
 ## Built with
 
