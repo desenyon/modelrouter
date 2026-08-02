@@ -25,29 +25,90 @@ type Config struct {
 	APIKey   string         `yaml:"api_key"`
 	Upstream UpstreamConfig `yaml:"upstream"`
 	Router   RouterConfig   `yaml:"router"`
+	Policy   PolicyConfig   `yaml:"policy"`
+	Cache    CacheConfig    `yaml:"cache"`
+	Cascade  CascadeConfig  `yaml:"cascade"`
 	Models   ModelsConfig   `yaml:"models"`
 }
 
-// UpstreamConfig points at an OpenAI-compatible provider (OpenRouter, OpenAI, etc.).
+// UpstreamConfig points at an OpenAI-compatible provider.
 type UpstreamConfig struct {
 	BaseURL string        `yaml:"base_url"`
 	APIKey  string        `yaml:"api_key"`
 	Timeout time.Duration `yaml:"timeout"`
 }
 
-// RouterConfig controls classification and optimization.
+// RouterConfig controls classification thresholds and adaptation.
 type RouterConfig struct {
 	DefaultMode   Mode    `yaml:"default_mode"`
 	LunaMaxScore  float64 `yaml:"luna_max_score"`
 	TerraMaxScore float64 `yaml:"terra_max_score"`
 	ShowRouted    bool    `yaml:"show_routed"`
+	Adaptive      bool    `yaml:"adaptive"`
+	SolShareTarget float64 `yaml:"sol_share_target"`
 }
 
-// ModelsConfig maps logical tiers to concrete upstream model IDs.
+// PolicyConfig holds Luna-first guardrail knobs.
+type PolicyConfig struct {
+	ForceLunaEasy      bool    `yaml:"force_luna_easy"`
+	MinTerraTools      int     `yaml:"min_terra_tools"`
+	SuppressSolBelow   float64 `yaml:"suppress_sol_below"`
+	MinSolHardMarkers  int     `yaml:"min_sol_hard_markers"`
+	MinSolTokens       int     `yaml:"min_sol_tokens"`
+}
+
+// CacheConfig controls the fingerprint response cache.
+type CacheConfig struct {
+	Enabled  bool `yaml:"enabled"`
+	Capacity int  `yaml:"capacity"`
+}
+
+// CascadeConfig controls one-shot escalate-on-failure.
+type CascadeConfig struct {
+	Enabled bool `yaml:"enabled"`
+}
+
+// TierPool is a primary model plus optional fallbacks for one tier.
+type TierPool struct {
+	Primary   string   `yaml:"primary"`
+	Fallbacks []string `yaml:"fallbacks"`
+}
+
+// UnmarshalYAML accepts either a plain string or {primary,fallbacks}.
+func (t *TierPool) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind == yaml.ScalarNode {
+		var s string
+		if err := value.Decode(&s); err != nil {
+			return err
+		}
+		t.Primary = s
+		t.Fallbacks = nil
+		return nil
+	}
+	type raw TierPool
+	var r raw
+	if err := value.Decode(&r); err != nil {
+		return err
+	}
+	*t = TierPool(r)
+	return nil
+}
+
+// Candidates returns primary followed by fallbacks.
+func (t TierPool) Candidates() []string {
+	out := make([]string, 0, 1+len(t.Fallbacks))
+	if t.Primary != "" {
+		out = append(out, t.Primary)
+	}
+	out = append(out, t.Fallbacks...)
+	return out
+}
+
+// ModelsConfig maps logical tiers to candidate pools.
 type ModelsConfig struct {
-	Luna  string `yaml:"luna"`
-	Terra string `yaml:"terra"`
-	Sol   string `yaml:"sol"`
+	Luna  TierPool `yaml:"luna"`
+	Terra TierPool `yaml:"terra"`
+	Sol   TierPool `yaml:"sol"`
 }
 
 // Default returns a Luna-first, production-ready configuration.
@@ -59,15 +120,31 @@ func Default() Config {
 			Timeout: 120 * time.Second,
 		},
 		Router: RouterConfig{
-			DefaultMode:   ModeBalance,
-			LunaMaxScore:  0.42,
-			TerraMaxScore: 0.72,
-			ShowRouted:    true,
+			DefaultMode:    ModeBalance,
+			LunaMaxScore:   0.42,
+			TerraMaxScore:  0.72,
+			ShowRouted:     true,
+			Adaptive:       true,
+			SolShareTarget: 0.15,
+		},
+		Policy: PolicyConfig{
+			ForceLunaEasy:     true,
+			MinTerraTools:     3,
+			SuppressSolBelow:  0.42,
+			MinSolHardMarkers: 3,
+			MinSolTokens:      1500,
+		},
+		Cache: CacheConfig{
+			Enabled:  true,
+			Capacity: 2048,
+		},
+		Cascade: CascadeConfig{
+			Enabled: true,
 		},
 		Models: ModelsConfig{
-			Luna:  "openai/gpt-5.6-luna",
-			Terra: "openai/gpt-5.6-terra",
-			Sol:   "openai/gpt-5.6-sol",
+			Luna:  TierPool{Primary: "openai/gpt-5.6-luna"},
+			Terra: TierPool{Primary: "openai/gpt-5.6-terra"},
+			Sol:   TierPool{Primary: "openai/gpt-5.6-sol"},
 		},
 	}
 }
@@ -85,16 +162,38 @@ func Load(path string) (Config, error) {
 		}
 	}
 	applyEnv(&cfg)
+	normalize(&cfg)
+	if err := cfg.Validate(); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
+}
+
+func normalize(cfg *Config) {
 	if cfg.Upstream.Timeout <= 0 {
 		cfg.Upstream.Timeout = 120 * time.Second
 	}
 	if cfg.Router.DefaultMode == "" {
 		cfg.Router.DefaultMode = ModeBalance
 	}
-	if err := cfg.Validate(); err != nil {
-		return Config{}, err
+	if cfg.Router.SolShareTarget <= 0 {
+		cfg.Router.SolShareTarget = 0.15
 	}
-	return cfg, nil
+	if cfg.Cache.Capacity <= 0 {
+		cfg.Cache.Capacity = 2048
+	}
+	if cfg.Policy.SuppressSolBelow <= 0 {
+		cfg.Policy.SuppressSolBelow = cfg.Router.LunaMaxScore
+	}
+	if cfg.Policy.MinTerraTools <= 0 {
+		cfg.Policy.MinTerraTools = 3
+	}
+	if cfg.Policy.MinSolHardMarkers <= 0 {
+		cfg.Policy.MinSolHardMarkers = 3
+	}
+	if cfg.Policy.MinSolTokens <= 0 {
+		cfg.Policy.MinSolTokens = 1500
+	}
 }
 
 func applyEnv(cfg *Config) {
@@ -114,13 +213,13 @@ func applyEnv(cfg *Config) {
 		cfg.Router.DefaultMode = Mode(strings.ToLower(v))
 	}
 	if v := os.Getenv("MODELROUTER_LUNA"); v != "" {
-		cfg.Models.Luna = v
+		cfg.Models.Luna = TierPool{Primary: v}
 	}
 	if v := os.Getenv("MODELROUTER_TERRA"); v != "" {
-		cfg.Models.Terra = v
+		cfg.Models.Terra = TierPool{Primary: v}
 	}
 	if v := os.Getenv("MODELROUTER_SOL"); v != "" {
-		cfg.Models.Sol = v
+		cfg.Models.Sol = TierPool{Primary: v}
 	}
 }
 
@@ -141,8 +240,8 @@ func (c Config) Validate() error {
 	if c.Upstream.BaseURL == "" {
 		return fmt.Errorf("upstream.base_url is required")
 	}
-	if c.Models.Luna == "" || c.Models.Terra == "" || c.Models.Sol == "" {
-		return fmt.Errorf("models.luna, models.terra, and models.sol are required")
+	if c.Models.Luna.Primary == "" || c.Models.Terra.Primary == "" || c.Models.Sol.Primary == "" {
+		return fmt.Errorf("models.luna, models.terra, and models.sol primaries are required")
 	}
 	switch c.Router.DefaultMode {
 	case ModeCost, ModeBalance, ModeIntelligence, "":
