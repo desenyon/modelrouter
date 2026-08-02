@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -18,18 +19,32 @@ type Client struct {
 	userAgent  string
 }
 
-// New builds an upstream client.
+// New builds an upstream client. Timeout bounds header wait, not the full stream body.
 func New(baseURL, apiKey string, timeout time.Duration) *Client {
 	if timeout <= 0 {
 		timeout = 120 * time.Second
+	}
+	transport := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   15 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: timeout,
+		ExpectContinueTimeout: 1 * time.Second,
 	}
 	return &Client{
 		baseURL: strings.TrimRight(baseURL, "/"),
 		apiKey:  apiKey,
 		httpClient: &http.Client{
-			Timeout: timeout,
+			Transport: transport,
+			// No overall Timeout — streaming bodies can outlive header wait.
 		},
-		userAgent: "modelrouter-gateway/1.0",
+		userAgent: "modelrouter-gateway/2.0",
 	}
 }
 
