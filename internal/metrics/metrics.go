@@ -7,21 +7,23 @@ import (
 	"time"
 )
 
-// Collector tracks gateway volume and tier mix.
+// Collector tracks gateway volume, tier mix, cache, and cascade.
 type Collector struct {
 	started time.Time
 
-	requests   atomic.Uint64
-	errors     atomic.Uint64
-	bytesIn    atomic.Uint64
-	bytesOut   atomic.Uint64
-	luna       atomic.Uint64
-	terra      atomic.Uint64
-	sol        atomic.Uint64
+	requests    atomic.Uint64
+	errors      atomic.Uint64
+	bytesIn     atomic.Uint64
+	bytesOut    atomic.Uint64
+	luna        atomic.Uint64
+	terra       atomic.Uint64
+	sol         atomic.Uint64
 	passthrough atomic.Uint64
+	cacheHits   atomic.Uint64
+	cascades    atomic.Uint64
 
-	mu       sync.Mutex
-	latencyN int64
+	mu           sync.Mutex
+	latencyN     int64
 	latencySumMs int64
 }
 
@@ -56,6 +58,12 @@ func (c *Collector) RecordRoute(tier string, passthrough bool, latency time.Dura
 	c.mu.Unlock()
 }
 
+// RecordCacheHit notes a fingerprint cache hit.
+func (c *Collector) RecordCacheHit() { c.cacheHits.Add(1) }
+
+// RecordCascade notes a tier/model escalate.
+func (c *Collector) RecordCascade() { c.cascades.Add(1) }
+
 // Snapshot is a JSON-friendly metrics dump.
 type Snapshot struct {
 	UptimeSeconds float64 `json:"uptime_seconds"`
@@ -67,9 +75,12 @@ type Snapshot struct {
 	Terra         uint64  `json:"terra"`
 	Sol           uint64  `json:"sol"`
 	Passthrough   uint64  `json:"passthrough"`
+	CacheHits     uint64  `json:"cache_hits"`
+	Cascades      uint64  `json:"cascades"`
 	AvgLatencyMs  float64 `json:"avg_latency_ms"`
 	SolShare      float64 `json:"sol_share"`
 	LunaShare     float64 `json:"luna_share"`
+	CascadeRate   float64 `json:"cascade_rate"`
 }
 
 // Snapshot returns current counters.
@@ -79,6 +90,7 @@ func (c *Collector) Snapshot() Snapshot {
 	terra := c.terra.Load()
 	sol := c.sol.Load()
 	routed := luna + terra + sol
+	cascades := c.cascades.Load()
 
 	c.mu.Lock()
 	n, sum := c.latencyN, c.latencySumMs
@@ -88,10 +100,13 @@ func (c *Collector) Snapshot() Snapshot {
 	if n > 0 {
 		avg = float64(sum) / float64(n)
 	}
-	var solShare, lunaShare float64
+	var solShare, lunaShare, cascadeRate float64
 	if routed > 0 {
 		solShare = float64(sol) / float64(routed)
 		lunaShare = float64(luna) / float64(routed)
+	}
+	if req > 0 {
+		cascadeRate = float64(cascades) / float64(req)
 	}
 
 	return Snapshot{
@@ -104,8 +119,11 @@ func (c *Collector) Snapshot() Snapshot {
 		Terra:         terra,
 		Sol:           sol,
 		Passthrough:   c.passthrough.Load(),
+		CacheHits:     c.cacheHits.Load(),
+		Cascades:      cascades,
 		AvgLatencyMs:  avg,
 		SolShare:      solShare,
 		LunaShare:     lunaShare,
+		CascadeRate:   cascadeRate,
 	}
 }
