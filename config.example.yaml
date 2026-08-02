@@ -16,8 +16,31 @@ router:
   luna_max_score: 0.42           # score ≤ this → Luna
   terra_max_score: 0.72          # score ≤ this → Terra; above → Sol
   show_routed: true              # emit X-Modelrouter-* response headers
+  adaptive: true                 # nudge thresholds from recent Sol share (±0.05)
+  sol_share_target: 0.15         # soft target for adaptive controller
+
+policy:
+  force_luna_easy: true          # easy+short+no-tools → force Luna, no Sol cascade
+  min_terra_tools: 3             # tools ≥ N → min Terra
+  suppress_sol_below: 0.42       # absolute Sol suppress ceiling
+  min_sol_hard_markers: 3
+  min_sol_tokens: 1500
+
+cache:
+  enabled: true
+  capacity: 2048                 # LRU fingerprint cache (non-stream only)
+
+cascade:
+  enabled: true                  # one-shot escalate on 429/5xx/timeout
 
 models:
-  luna:  "openai/gpt-5.6-luna"
-  terra: "openai/gpt-5.6-terra"
-  sol:   "openai/gpt-5.6-sol"
+  # string form still works: luna: "openai/gpt-5.6-luna"
+  luna:
+    primary: "openai/gpt-5.6-luna"
+    fallbacks: []
+  terra:
+    primary: "openai/gpt-5.6-terra"
+    fallbacks: []
+  sol:
+    primary: "openai/gpt-5.6-sol"
+    fallbacks: []
