@@ -1,7 +1,11 @@
 // Package models defines logical routing tiers and the live model registry.
 package models
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/desenyon/modelrouter/internal/config"
+)
 
 // Tier is a capability / cost band. Luna handles the majority of work;
 // Sol is reserved for tasks that genuinely need frontier intelligence.
@@ -27,20 +31,32 @@ func (t Tier) Order() int {
 	}
 }
 
-// Registry maps virtual model names and tiers to upstream IDs.
+// Next returns the next higher tier, or empty at Sol.
+func (t Tier) Next() Tier {
+	switch t {
+	case TierLuna:
+		return TierTerra
+	case TierTerra:
+		return TierSol
+	default:
+		return ""
+	}
+}
+
+// Registry maps tiers to candidate pools.
 type Registry struct {
-	Luna  string
-	Terra string
-	Sol   string
+	Luna  config.TierPool
+	Terra config.TierPool
+	Sol   config.TierPool
 }
 
-// NewRegistry builds a registry from concrete upstream model IDs.
-func NewRegistry(luna, terra, sol string) Registry {
-	return Registry{Luna: luna, Terra: terra, Sol: sol}
+// NewRegistry builds a registry from config pools.
+func NewRegistry(m config.ModelsConfig) Registry {
+	return Registry{Luna: m.Luna, Terra: m.Terra, Sol: m.Sol}
 }
 
-// ResolveTier returns the upstream model for a tier.
-func (r Registry) ResolveTier(t Tier) string {
+// Pool returns the candidate pool for a tier.
+func (r Registry) Pool(t Tier) config.TierPool {
 	switch t {
 	case TierLuna:
 		return r.Luna
@@ -53,19 +69,29 @@ func (r Registry) ResolveTier(t Tier) string {
 	}
 }
 
+// ResolveTier returns the primary upstream model for a tier.
+func (r Registry) ResolveTier(t Tier) string {
+	return r.Pool(t).Primary
+}
+
+// Candidates returns primary+fallbacks for a tier.
+func (r Registry) Candidates(t Tier) []string {
+	return r.Pool(t).Candidates()
+}
+
 // Virtual models that trigger intelligent routing.
 var virtual = map[string]struct{}{
-	"auto":          {},
-	"router":        {},
-	"modelrouter":   {},
-	"auto-smart":    {},
-	"luna":          {},
-	"terra":         {},
-	"sol":           {},
-	"modelrouter/auto": {},
-	"modelrouter/luna": {},
+	"auto":              {},
+	"router":            {},
+	"modelrouter":       {},
+	"auto-smart":        {},
+	"luna":              {},
+	"terra":             {},
+	"sol":               {},
+	"modelrouter/auto":  {},
+	"modelrouter/luna":  {},
 	"modelrouter/terra": {},
-	"modelrouter/sol": {},
+	"modelrouter/sol":   {},
 }
 
 // IsVirtual reports whether the requested model should be routed.
@@ -75,8 +101,7 @@ func IsVirtual(model string) bool {
 	return ok
 }
 
-// ForcedTier returns a pinned tier when the client asked for luna/terra/sol
-// directly. Empty means full auto routing.
+// ForcedTier returns a pinned tier when the client asked for luna/terra/sol.
 func ForcedTier(model string) (Tier, bool) {
 	m := strings.ToLower(strings.TrimSpace(model))
 	switch m {
@@ -96,9 +121,9 @@ func (r Registry) Catalog() []CatalogEntry {
 	return []CatalogEntry{
 		{ID: "auto", OwnedBy: "modelrouter", Description: "Intelligent router — Luna by default, Sol only when needed"},
 		{ID: "router", OwnedBy: "modelrouter", Description: "Alias for auto"},
-		{ID: "luna", OwnedBy: "modelrouter", Description: "Force the efficient Luna tier → " + r.Luna},
-		{ID: "terra", OwnedBy: "modelrouter", Description: "Force the balanced Terra tier → " + r.Terra},
-		{ID: "sol", OwnedBy: "modelrouter", Description: "Force the frontier Sol tier → " + r.Sol},
+		{ID: "luna", OwnedBy: "modelrouter", Description: "Force the efficient Luna tier → " + r.Luna.Primary},
+		{ID: "terra", OwnedBy: "modelrouter", Description: "Force the balanced Terra tier → " + r.Terra.Primary},
+		{ID: "sol", OwnedBy: "modelrouter", Description: "Force the frontier Sol tier → " + r.Sol.Primary},
 	}
 }
 
