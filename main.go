@@ -1,283 +1,173 @@
-// modelrouter — a terminal explorer for the OpenRouter model catalog.
+// modelrouter — intelligent model routing gateway.
+//
+// Point any OpenAI-compatible client at the gateway with model "auto".
+// Requests are classified and sent to Luna by default; Sol is used only
+// when the task actually needs frontier intelligence.
 package main
 
 import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"sync"
+	"strings"
 
 	"github.com/spf13/cobra"
 
-	"github.com/desenyon/modelrouter/internal/api"
-	"github.com/desenyon/modelrouter/internal/cli"
-	"github.com/desenyon/modelrouter/internal/tui"
+	"github.com/desenyon/modelrouter/internal/classifier"
+	"github.com/desenyon/modelrouter/internal/config"
+	"github.com/desenyon/modelrouter/internal/gateway"
+	"github.com/desenyon/modelrouter/internal/router"
 )
 
 func main() {
-	client := api.New()
-
 	var (
-		jsonOut      bool
-		sortFlag     string
-		desc         bool
-		search       string
-		freeOnly     bool
-		tools        bool
-		modality     string
-		modelLimit   int
-		rankingLimit int
-		refresh      bool
+		configPath string
+		modeFlag   string
+		jsonOut    bool
 	)
 
 	root := &cobra.Command{
 		Use:   "modelrouter",
-		Short: "Beautiful terminal explorer for the OpenRouter catalog",
-		Long:  "modelrouter — browse every model, provider endpoint, price, and capability on OpenRouter.\nRun with no arguments for the interactive TUI; use subcommands for scriptable output.",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return tui.Run(client)
-		},
+		Short: "Intelligent model routing gateway — Luna first, Sol only when needed",
+		Long: `modelrouter is an OpenAI-compatible gateway that routes every request
+to the cheapest capable tier.
+
+  Luna  — fast, efficient, default for most work
+  Terra — balanced mid-tier
+  Sol   — frontier intelligence, used sparingly
+
+Point your app at the gateway with model "auto" (or "router") and optional
+optimize_for: cost | balance | intelligence.`,
 		SilenceUsage: true,
 	}
-	root.PersistentFlags().BoolVar(&refresh, "refresh", false, "bypass the local cache")
+	root.PersistentFlags().StringVarP(&configPath, "config", "c", "", "path to config YAML")
+	root.PersistentFlags().BoolVar(&jsonOut, "json", false, "emit JSON")
 
-	loadModels := func() ([]api.Model, error) { return client.Models(refresh) }
+	serveCmd := &cobra.Command{
+		Use:   "serve",
+		Short: "Start the OpenAI-compatible routing gateway",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := config.Load(configPath)
+			if err != nil {
+				return err
+			}
+			if modeFlag != "" {
+				cfg.Router.DefaultMode = config.Mode(strings.ToLower(modeFlag))
+				if err := cfg.Validate(); err != nil {
+					return err
+				}
+			}
+			srv := gateway.New(cfg, nil)
+			return srv.ListenAndServe()
+		},
+	}
+	serveCmd.Flags().StringVar(&modeFlag, "mode", "", "override default mode: cost|balance|intelligence")
+
+	routeCmd := &cobra.Command{
+		Use:   "route [prompt...]",
+		Short: "Preview which tier a prompt would hit (no upstream call)",
+		Args:  cobra.ArbitraryArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := config.Load(configPath)
+			if err != nil {
+				return err
+			}
+			if modeFlag != "" {
+				cfg.Router.DefaultMode = config.Mode(strings.ToLower(modeFlag))
+			}
+			prompt := strings.Join(args, " ")
+			if prompt == "" {
+				b, err := os.ReadFile("/dev/stdin")
+				if err == nil && len(b) > 0 {
+					prompt = string(b)
+				}
+			}
+			if strings.TrimSpace(prompt) == "" {
+				return fmt.Errorf("provide a prompt as args or on stdin")
+			}
+			engine := router.New(cfg)
+			model, _ := cmd.Flags().GetString("model")
+			dec := engine.Route(router.RouteInput{
+				Model: model,
+				Mode:  cfg.ModeOrDefault(),
+				Req: classifier.Request{
+					Messages: []classifier.Message{{Role: "user", Content: prompt}},
+				},
+			})
+			if jsonOut {
+				enc := json.NewEncoder(os.Stdout)
+				enc.SetIndent("", "  ")
+				return enc.Encode(dec)
+			}
+			fmt.Printf("tier:     %s\n", dec.Tier)
+			fmt.Printf("model:    %s\n", dec.UpstreamModel)
+			fmt.Printf("mode:     %s\n", dec.Mode)
+			fmt.Printf("score:    %.3f\n", dec.Score)
+			fmt.Printf("reasons:  %s\n", strings.Join(dec.Reasons, "; "))
+			return nil
+		},
+	}
+	routeCmd.Flags().String("model", "auto", "virtual model: auto|luna|terra|sol")
+	routeCmd.Flags().StringVar(&modeFlag, "mode", "", "cost|balance|intelligence")
 
 	modelsCmd := &cobra.Command{
 		Use:   "models",
-		Short: "List models (filterable, sortable, JSON-able)",
+		Short: "List virtual router models and upstream tier mappings",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			models, err := loadModels()
+			cfg, err := config.Load(configPath)
 			if err != nil {
 				return err
 			}
-			models = api.FilterModels(models, api.Filter{
-				Query: search, FreeOnly: freeOnly, Tools: tools, Modality: modality,
-			})
-			if search == "" {
-				api.SortModels(models, api.ParseSortKey(sortFlag), desc)
+			engine := router.New(cfg)
+			type row struct {
+				ID          string `json:"id"`
+				Upstream    string `json:"upstream,omitempty"`
+				Description string `json:"description"`
 			}
-			if modelLimit > 0 && len(models) > modelLimit {
-				models = models[:modelLimit]
+			rows := []row{}
+			for _, e := range engine.Registry().Catalog() {
+				up := ""
+				switch e.ID {
+				case "luna":
+					up = cfg.Models.Luna
+				case "terra":
+					up = cfg.Models.Terra
+				case "sol":
+					up = cfg.Models.Sol
+				}
+				rows = append(rows, row{ID: e.ID, Upstream: up, Description: e.Description})
 			}
 			if jsonOut {
-				return cli.JSON(models)
+				enc := json.NewEncoder(os.Stdout)
+				enc.SetIndent("", "  ")
+				return enc.Encode(rows)
 			}
-			cli.PrintModels(models)
-			return nil
-		},
-	}
-	modelsCmd.Flags().BoolVar(&jsonOut, "json", false, "emit JSON")
-	modelsCmd.Flags().StringVar(&sortFlag, "sort", "newest", "sort: newest|name|prompt|completion|context")
-	modelsCmd.Flags().BoolVar(&desc, "desc", false, "reverse sort order")
-	modelsCmd.Flags().StringVar(&search, "search", "", "fuzzy search query")
-	modelsCmd.Flags().BoolVar(&freeOnly, "free", false, "free models only")
-	modelsCmd.Flags().BoolVar(&tools, "tools", false, "models with tool calling only")
-	modelsCmd.Flags().StringVar(&modality, "input", "", "require input modality: text|image|audio|file")
-	modelsCmd.Flags().IntVar(&modelLimit, "limit", 0, "max rows (0 = all)")
-
-	modelCmd := &cobra.Command{
-		Use:   "model <id>",
-		Short: "Full detail for one model, including per-provider endpoints",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			models, err := loadModels()
-			if err != nil {
-				return err
-			}
-			m := api.FindModel(models, args[0])
-			if m == nil {
-				return fmt.Errorf("no model matching %q", args[0])
-			}
-			eps, epsErr := client.Endpoints(m.ID, refresh)
-			var mb *api.ModelBench
-			if bench, err := client.Benchmarks(refresh); err == nil {
-				mb = bench.ForModel(*m)
-			} else if refresh {
-				return err
-			}
-			if jsonOut {
-				return cli.JSON(map[string]any{"model": m, "endpoints": eps, "benchmarks": mb})
-			}
-			cli.PrintModelDetail(*m, eps, epsErr)
-			cli.PrintModelBench(mb)
-			return nil
-		},
-	}
-	modelCmd.Flags().BoolVar(&jsonOut, "json", false, "emit JSON")
-
-	providersCmd := &cobra.Command{
-		Use:   "providers",
-		Short: "List inference providers",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			providers, err := client.Providers(refresh)
-			if err != nil {
-				return err
-			}
-			if jsonOut {
-				return cli.JSON(providers)
-			}
-			cli.PrintProviders(providers)
-			return nil
-		},
-	}
-	providersCmd.Flags().BoolVar(&jsonOut, "json", false, "emit JSON")
-
-	statsCmd := &cobra.Command{
-		Use:   "stats",
-		Short: "Catalog-wide stats: authors, pricing, context, capabilities",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			models, err := loadModels()
-			if err != nil {
-				return err
-			}
-			providers, err := client.Providers(refresh)
-			if err != nil {
-				return err
-			}
-			cli.PrintStats(api.ComputeStats(models, providers))
-			return nil
-		},
-	}
-
-	var appsPeriod string
-	rankingsCmd := &cobra.Command{
-		Use:   "rankings [models|apps|share|perf|all]",
-		Short: "Live leaderboards: token usage, top apps, market share, performance",
-		Long:  "Live leaderboard data from OpenRouter's (unofficial) frontend API:\ntoken usage per model, top apps, author market share, and latency/throughput leaders.",
-		Args:  cobra.MaximumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := client.Rankings(refresh)
-			if err != nil {
-				return err
-			}
-			what := "models"
-			if len(args) > 0 {
-				what = args[0]
-			}
-			if jsonOut {
-				switch what {
-				case "models":
-					return cli.JSON(r.TopModels())
-				case "apps":
-					return cli.JSON(r.Apps)
-				case "share":
-					return cli.JSON(r.MarketShare)
-				case "perf":
-					return cli.JSON(r.Performance)
-				default:
-					return cli.JSON(r)
+			fmt.Println("virtual models")
+			for _, r := range rows {
+				if r.Upstream != "" {
+					fmt.Printf("  %-8s → %s\n    %s\n", r.ID, r.Upstream, r.Description)
+				} else {
+					fmt.Printf("  %-8s\n    %s\n", r.ID, r.Description)
 				}
 			}
-			switch what {
-			case "models":
-				cli.PrintTopModels(r, rankingLimit)
-			case "apps":
-				cli.PrintApps(r, appsPeriod)
-			case "share":
-				cli.PrintMarketShare(r)
-			case "perf":
-				cli.PrintPerformance(r, rankingLimit)
-			case "all":
-				cli.PrintTopModels(r, 20)
-				cli.PrintMarketShare(r)
-				cli.PrintApps(r, appsPeriod)
-				cli.PrintPerformance(r, 15)
-			default:
-				return fmt.Errorf("unknown rankings view %q (models|apps|share|perf|all)", what)
-			}
-			return nil
-		},
-	}
-	rankingsCmd.Flags().BoolVar(&jsonOut, "json", false, "emit JSON")
-	rankingsCmd.Flags().IntVar(&rankingLimit, "limit", 25, "max rows (0 = all)")
-	rankingsCmd.Flags().StringVar(&appsPeriod, "period", "week", "apps period: day|week|month")
-
-	benchCmd := &cobra.Command{
-		Use:     "benchmarks",
-		Aliases: []string{"bench"},
-		Short:   "Artificial Analysis scores + Design Arena results",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			b, err := client.Benchmarks(refresh)
-			if err != nil {
-				return err
-			}
-			if jsonOut {
-				return cli.JSON(b)
-			}
-			cli.PrintBenchmarks(b)
-			return nil
-		},
-	}
-	benchCmd.Flags().BoolVar(&jsonOut, "json", false, "emit JSON")
-
-	var withEndpoints bool
-	var outFile string
-	exportCmd := &cobra.Command{
-		Use:   "export",
-		Short: "Dump the entire catalog as JSON (optionally every model's endpoints)",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			models, err := loadModels()
-			if err != nil {
-				return err
-			}
-			providers, err := client.Providers(refresh)
-			if err != nil {
-				return err
-			}
-			dump := map[string]any{"models": models, "providers": providers}
-			if withEndpoints {
-				eps := make(map[string]*api.ModelEndpoints, len(models))
-				var mu sync.Mutex
-				var wg sync.WaitGroup
-				sem := make(chan struct{}, 8)
-				for _, m := range models {
-					wg.Add(1)
-					go func(id string) {
-						defer wg.Done()
-						sem <- struct{}{}
-						defer func() { <-sem }()
-						if e, err := client.Endpoints(id, refresh); err == nil {
-							mu.Lock()
-							eps[id] = e
-							mu.Unlock()
-						}
-					}(m.ID)
-				}
-				wg.Wait()
-				dump["endpoints"] = eps
-				fmt.Fprintf(os.Stderr, "fetched endpoints for %d/%d models\n", len(eps), len(models))
-			}
-			if outFile != "" {
-				b, err := json.MarshalIndent(dump, "", "  ")
-				if err != nil {
-					return err
-				}
-				if err := os.WriteFile(outFile, b, 0o644); err != nil {
-					return err
-				}
-				fmt.Fprintln(os.Stderr, "wrote "+outFile)
-				return nil
-			}
-			return cli.JSON(dump)
-		},
-	}
-	exportCmd.Flags().BoolVar(&withEndpoints, "endpoints", false, "also fetch per-provider endpoints for every model")
-	exportCmd.Flags().StringVar(&outFile, "out", "", "write to file instead of stdout")
-
-	cacheCmd := &cobra.Command{
-		Use:   "clear-cache",
-		Short: "Delete the local response cache",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := client.ClearCache(); err != nil {
-				return err
-			}
-			fmt.Println("cache cleared:", client.CacheDir)
+			fmt.Printf("\ndefault mode: %s\n", cfg.ModeOrDefault())
 			return nil
 		},
 	}
 
-	root.AddCommand(modelsCmd, modelCmd, providersCmd, statsCmd, rankingsCmd, benchCmd, exportCmd, cacheCmd)
+	versionCmd := &cobra.Command{
+		Use:   "version",
+		Short: "Print version",
+		Run: func(cmd *cobra.Command, args []string) {
+			fmt.Println("modelrouter 1.0.0 — routing gateway")
+		},
+	}
+
+	// Default to serve when no subcommand — gateway-first UX.
+	root.RunE = serveCmd.RunE
+	root.Flags().AddFlagSet(serveCmd.Flags())
+
+	root.AddCommand(serveCmd, routeCmd, modelsCmd, versionCmd)
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
 	}
