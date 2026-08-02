@@ -1,185 +1,187 @@
-<div align="center">
-
 # ◆ modelrouter
 
-**A beautiful terminal UI for the entire OpenRouter catalog.**
+**The intelligent routing gateway for multi-model apps.**
 
-Every model, every price, every provider endpoint — plus the live rankings,
-market share, and AI benchmarks from openrouter.ai — without leaving your shell.
+Point any OpenAI-compatible client at modelrouter with `model: "auto"`.
+Every request is classified — **Luna** handles the work it can,
+**Terra** covers the middle, and **Sol** is used only when the task
+actually needs frontier intelligence.
+
+Stop paying Sol prices for Luna jobs.
 
 [![Go](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go&logoColor=white)](https://go.dev)
-[![Built with Charm](https://img.shields.io/badge/built%20with-Charm-FF6AC1)](https://charm.sh)
-[![Bubble Tea](https://img.shields.io/badge/TUI-Bubble%20Tea-7D56F4)](https://github.com/charmbracelet/bubbletea)
+[![OpenAI Compatible](https://img.shields.io/badge/API-OpenAI%20compatible-10A37F)](https://platform.openai.com/docs/api-reference)
 [![License: MIT](https://img.shields.io/badge/license-MIT-04B575)](LICENSE)
 
-<img src="assets/demo.gif" alt="modelrouter demo" width="900">
-
-</div>
+```
+┌──────────────┐     classify      ┌─────────────┐
+│  your app    │ ───────────────▶  │ modelrouter │
+│  model=auto  │                   │   gateway   │
+└──────────────┘                   └──────┬──────┘
+                                          │
+                    ┌─────────────────────┼─────────────────────┐
+                    ▼                     ▼                     ▼
+                 ◆ Luna               ◆ Terra               ◆ Sol
+              efficient            balanced             frontier
+              (default)           (mid load)         (only if needed)
+```
 
 ---
 
+## Why
+
+Most traffic does not need your most expensive model. Renames, summaries,
+boilerplate, short answers, light refactors — **Luna** is enough.
+Reserve **Sol** for architecture, hard debugging, long-horizon agents,
+and work where frontier quality actually moves the outcome.
+
+modelrouter is the separate routing plane for your app: a drop-in gateway
+that enforces that policy on every request.
+
 ## Highlights
 
-- **The complete model catalog** — text, image, audio, speech, transcription,
-  video, embedding, and reranking models with modality-aware pricing
-- **Live rankings** — token-usage leaderboards, author market share, top apps, and
-  p50 latency/throughput, auto-refreshed every 5 minutes
-- **AI benchmarks** — every Artificial Analysis index and Design Arena category
-  currently published by OpenRouter, discovered dynamically and embedded into
-  each model's detail view
-- **Provider intelligence** — the complete provider directory with routing
-  capabilities, BYOK, moderation, data-retention/training policy, and public
-  legal/status links
-- **Per-provider endpoints** — quantization, uptime, latency, and throughput for
-  every provider serving a model
-- **Fully scriptable** — every view is also a subcommand with `--json` output
-- **Fast** — responses cached locally; works offline from cache
+- **Luna-first policy** — Sol is suppressed whenever the classifier says Luna fits
+- **OpenAI-compatible gateway** — `/v1/chat/completions`, `/v1/models`, streaming
+- **Three optimization modes** — `cost` · `balance` · `intelligence`
+- **Virtual models** — `auto`, `luna`, `terra`, `sol` (or pass any upstream id through)
+- **Route preview** — `modelrouter route "..."` and `POST /v1/route` without spending tokens
+- **Observable** — `X-Modelrouter-*` headers, `/metrics`, structured access logs
+- **Provider-agnostic** — OpenRouter, OpenAI, or any OpenAI-compatible upstream
 
-## Install
+## Quick start
 
 ```sh
 go install github.com/desenyon/modelrouter@latest
+
+export OPENROUTER_API_KEY=sk-or-...
+modelrouter serve
 ```
 
-Or build from source:
+Then point your client at the gateway:
+
+```bash
+curl http://127.0.0.1:8787/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "auto",
+    "optimize_for": "balance",
+    "messages": [{"role":"user","content":"Rename this variable for clarity."}]
+  }'
+```
+
+Response headers tell you what happened:
+
+```
+X-Modelrouter-Tier: luna
+X-Modelrouter-Model: openai/gpt-5.6-luna
+X-Modelrouter-Mode: balance
+X-Modelrouter-Score: 0.120
+```
+
+## Routing policy
+
+| Score band | Tier | When |
+|------------|------|------|
+| low | **Luna** | short prompts, easy markers, formatting, summaries |
+| mid | **Terra** | multi-turn, tools, moderate context |
+| high | **Sol** | hard markers, huge context, heavy agents — only then |
+
+Modes shift the thresholds without abandoning Luna-first:
+
+| Mode | Behavior |
+|------|----------|
+| `cost` | Maximum Luna share. Sol only for extreme scores. |
+| `balance` | Default. Strong quality, Sol kept rare. |
+| `intelligence` | Terra/Sol earlier for hard work — Luna still handles the trivial. |
+
+Pin a tier when you want to override the classifier: `model: "luna" | "terra" | "sol"`.
+Pass any concrete upstream id to bypass routing entirely.
+
+## CLI
+
+```sh
+modelrouter serve                         # start gateway (default command)
+modelrouter serve --mode cost             # Luna-aggressive
+modelrouter serve -c config.yaml
+
+modelrouter route "fix this race condition in the scheduler"
+modelrouter route --mode cost --json "write a commit message"
+modelrouter models                        # virtual models + upstream mappings
+modelrouter version
+```
+
+## Configuration
+
+Copy [`config.example.yaml`](config.example.yaml) or use env vars:
+
+| Variable | Purpose |
+|----------|---------|
+| `MODELROUTER_LISTEN` | Bind address (default `:8787`) |
+| `MODELROUTER_API_KEY` | Optional key protecting the gateway |
+| `MODELROUTER_UPSTREAM_BASE_URL` | OpenAI-compatible base URL |
+| `MODELROUTER_UPSTREAM_API_KEY` | Upstream key (also `OPENROUTER_API_KEY` / `OPENAI_API_KEY`) |
+| `MODELROUTER_MODE` | `cost` \| `balance` \| `intelligence` |
+| `MODELROUTER_LUNA` / `_TERRA` / `_SOL` | Upstream model ids per tier |
+
+```yaml
+listen: ":8787"
+upstream:
+  base_url: "https://openrouter.ai/api/v1"
+router:
+  default_mode: balance
+  luna_max_score: 0.42
+  terra_max_score: 0.72
+models:
+  luna:  "openai/gpt-5.6-luna"
+  terra: "openai/gpt-5.6-terra"
+  sol:   "openai/gpt-5.6-sol"
+```
+
+## HTTP API
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/healthz` | Liveness + upstream status |
+| `GET` | `/metrics` | Tier mix, latency, Sol share |
+| `GET` | `/v1/models` | Virtual model catalog |
+| `POST` | `/v1/chat/completions` | Routed chat (streaming supported) |
+| `POST` | `/v1/route` | Classification preview only |
+
+Wire it into any SDK:
+
+```ts
+const client = new OpenAI({
+  baseURL: "http://127.0.0.1:8787/v1",
+  apiKey: process.env.MODELROUTER_API_KEY ?? "local",
+});
+
+const res = await client.chat.completions.create({
+  model: "auto",
+  messages: [{ role: "user", content: "Summarize this diff in one sentence." }],
+  // @ts-expect-error router extension
+  optimize_for: "cost",
+});
+```
+
+## Architecture
+
+```
+client  →  gateway  →  classifier  →  router (luna-first)  →  upstream
+                         │                  │
+                         └──── score ───────┘
+```
+
+This repo is the **routing plane** — a separable part of your stack.
+Your product talks to one endpoint; modelrouter decides Luna vs Terra vs Sol.
+
+## Install from source
 
 ```sh
 git clone https://github.com/desenyon/modelrouter.git
-cd modelrouter && go build -o modelrouter .
-./modelrouter
+cd modelrouter
+go build -o modelrouter .
+./modelrouter serve
 ```
-
-## The TUI
-
-Run `modelrouter` with no arguments. Five tabs, fully keyboard- and mouse-driven.
-
-### ▸ Models
-
-Browse, fuzzy-search (`/`), sort (`s`), and filter (`f` free · `t` tools · `m` modality)
-the entire catalog. `enter` opens details, `o` opens the model on openrouter.ai,
-`y` copies its id.
-
-<img src="assets/models.png" alt="models tab" width="900">
-
-### ▸ Model details
-
-Pricing (including cache and web-search rates), benchmark scores, supported
-parameters, and the full per-provider endpoint table with uptime.
-
-<img src="assets/detail.png" alt="model detail" width="900">
-
-### ▸ Rankings
-
-The live leaderboards from openrouter.ai/rankings: top models by token usage with
-day-over-day change, author market share, top apps (`p` cycles day/week/month), and
-performance leaders. Fetched fresh on open, re-fetched every 5 minutes.
-
-<img src="assets/rankings.png" alt="rankings tab" width="900">
-
-### ▸ Benchmarks
-
-Every Artificial Analysis leaderboard and Design Arena category in OpenRouter's
-current feed, plus elo, win rates, and estimated cost per request. New upstream
-categories appear automatically.
-
-<img src="assets/benchmarks.png" alt="benchmarks tab" width="900">
-
-### ▸ Providers
-
-The complete OpenRouter provider directory with chat/API capabilities, BYOK,
-training and prompt-retention policy signals, user-ID requirements, regions,
-and public legal/status links.
-
-<img src="assets/providers.png" alt="providers tab" width="900">
-
-### ▸ Stats
-
-Catalog-wide analytics: author counts, price and context-length distributions,
-parameter popularity, and the newest models.
-
-<img src="assets/stats.png" alt="stats tab" width="900">
-
-### ▸ Help
-
-Press `?` anywhere for the full keymap.
-
-<img src="assets/help.png" alt="help overlay" width="900">
-
-## Scriptable CLI
-
-Every view doubles as a plain command — pipe-friendly, with `--json` everywhere.
-
-```sh
-modelrouter models                          # pretty catalog table
-modelrouter models --search gemini --free   # fuzzy + filters
-modelrouter models --sort prompt --desc --limit 20
-modelrouter models --tools --input image    # tool-calling vision models
-modelrouter model claude-fable-5            # detail + endpoints + benchmarks
-modelrouter rankings                        # top models by token usage
-modelrouter rankings share                  # author market share
-modelrouter rankings apps --period month    # top apps
-modelrouter rankings perf                   # latency/throughput leaders
-modelrouter benchmarks                      # AA scores + Design Arena
-modelrouter providers                       # provider directory
-modelrouter stats                           # catalog analytics
-modelrouter export --endpoints --out all.json   # dump everything
-```
-
-Add `--json` to any of them. `--refresh` strictly bypasses the cache and returns
-an error if live data cannot be fetched; ordinary reads may use a stale snapshot
-during an outage.
-
-## Keymap
-
-| Key | Action |
-|-----|--------|
-| `1`–`5` · `tab` · `h`/`l` · `←`/`→` | switch tabs |
-| `↑`/`↓` · `j`/`k` · mouse wheel | move / scroll |
-| `g` / `G` | jump to top / bottom |
-| `enter` | open model details |
-| `/` | fuzzy search |
-| `s` / `v` | cycle sort / reverse |
-| `f` / `t` / `m` | filter free / tools / modality |
-| `o` | open model on openrouter.ai |
-| `y` | copy model id |
-| `p` | cycle apps period (rankings) |
-| `R` | refresh all data |
-| `?` | help overlay |
-| `q` / `ctrl+c` | quit |
-
-## Data sources
-
-**Official OpenRouter API** (no key required):
-
-| Endpoint | Data |
-|----------|------|
-| `/api/v1/models?output_modalities=all` | complete multimodal model catalog |
-| `/api/v1/models/{id}/endpoints` | per-provider endpoints, uptime, latency |
-| `/api/v1/providers` | provider directory |
-
-**Unofficial frontend API** (what openrouter.ai/rankings itself calls):
-
-| Endpoint | Data |
-|----------|------|
-| `/api/frontend/v1/rankings/models` | daily token usage per model |
-| `/api/frontend/v1/rankings/apps` | top apps by day/week/month |
-| `/api/frontend/v1/rankings/market-share` | weekly author token share |
-| `/api/frontend/v1/rankings/performance` | p50 latency/throughput |
-| `/api/frontend/v1/rankings/benchmarks` | Artificial Analysis + Design Arena + request costs |
-| `/api/frontend/v1/providers` | routing capabilities and public provider policy metadata |
-
-The frontend endpoints are undocumented and may change; responses are
-shape-validated and the official provider feed remains the fallback. Live
-surfaces refresh every 5 minutes and are cached under your OS cache directory
-(`modelrouter clear-cache` wipes it).
-
-## Built with
-
-[Bubble Tea](https://github.com/charmbracelet/bubbletea) ·
-[Bubbles](https://github.com/charmbracelet/bubbles) ·
-[Lip Gloss](https://github.com/charmbracelet/lipgloss) ·
-[Cobra](https://github.com/spf13/cobra) ·
-demo recorded with [VHS](https://github.com/charmbracelet/vhs)
 
 ## License
 
