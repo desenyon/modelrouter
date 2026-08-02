@@ -1,2 +1,18 @@
+# Built binary
+/modelrouter
 modelrouter
-*.json
+
+# Local config / secrets
+config.yaml
+*.local.yaml
+.env
+.env.*
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+
+# Test / coverage
+*.out
+coverage.html
