@@ -8,13 +8,12 @@ import (
 
 // ChatRequest is a subset of the OpenAI chat completions schema.
 type ChatRequest struct {
-	Model    string          `json:"model"`
-	Messages []ChatMessage   `json:"messages"`
-	Tools    json.RawMessage `json:"tools,omitempty"`
-	Stream   bool            `json:"stream,omitempty"`
-	// OptimizeFor selects cost | balance | intelligence (router extension).
-	OptimizeFor string `json:"optimize_for,omitempty"`
-	// Extra fields are preserved via Raw round-trip in the handler.
+	Model            string          `json:"model"`
+	Messages         []ChatMessage   `json:"messages"`
+	Tools            json.RawMessage `json:"tools,omitempty"`
+	Stream           bool            `json:"stream,omitempty"`
+	ResponseFormat   json.RawMessage `json:"response_format,omitempty"`
+	OptimizeFor      string          `json:"optimize_for,omitempty"`
 }
 
 // ChatMessage is a single chat turn.
@@ -69,6 +68,18 @@ func toolCount(raw json.RawMessage) int {
 		return 0
 	}
 	return len(arr)
+}
+
+func isStructured(raw json.RawMessage) bool {
+	if len(raw) == 0 || string(raw) == "null" {
+		return false
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return false
+	}
+	t, _ := obj["type"].(string)
+	return t == "json_schema" || t == "json_object"
 }
 
 // ModelList is an OpenAI-style /v1/models response.
