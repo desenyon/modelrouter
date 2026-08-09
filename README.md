@@ -132,3 +132,86 @@ go build -o modelrouter .
 ## License
 
 [MIT](LICENSE)
+
+<!-- architecture-atlas-v5:start -->
+## Architecture Atlas v5
+
+These editable Mermaid diagrams mirror the [Notion architecture dossier](https://app.notion.com/p/3b467342e8c181e7874eec74a2531035?pvs=204).
+
+### 1. Routing anatomy
+
+```mermaid
+flowchart LR
+  CLIENT["OpenAI-compatible client"] --> HTTP["HTTP validation, auth, streaming contract"]
+  HTTP --> CACHE["Fingerprint LRU<br>identical non-stream replay"]
+  CACHE --> FEATURE["Single-pass feature vector<br>tokens, tools, code, markers, structure"]
+  FEATURE --> SCORE["Weighted multi-axis complexity score"]
+  SCORE --> POLICY["Cost / balance / intelligence policy<br>easy-force and tool minimum rules"]
+  POLICY --> TIER["Luna / Terra / Sol tier selector"]
+  TIER --> CAND["Candidate registry"]
+  CAND --> CIRCUIT["Per-candidate EWMA + circuit breaker"]
+  CIRCUIT --> PROXY["Upstream proxy + stream copier"]
+  PROXY --> CASCADE["At most one bounded escalation"]
+  CASCADE --> ADAPT["Sol-share EWMA threshold nudge ±0.05"]
+  ADAPT --> OBS["Decision headers, trace, health, metrics"]
+```
+
+### 2. Decision wiring
+
+```mermaid
+flowchart TB
+  R["Canonical request"] --> H{"Fingerprint cache hit?"}
+  H -->|yes| RETURN["Return cached non-stream response"]
+  H -->|no| F["Extract O(n) features"] --> S["Compute complexity score"] --> P["Apply hard policy constraints"]
+  P --> T["Select tier under optimization mode"] --> C["Order healthy candidates"] --> U["Call primary upstream"]
+  U --> OK{"Successful response/stream?"}
+  OK -->|yes| METRIC["Update latency/error/tier counters"] --> OUT["Emit response + routing headers"]
+  OK -->|429 / 5xx / timeout| ALLOW{"Cascade allowed and fallback healthy?"}
+  ALLOW -->|yes| U2["One fallback call"] --> OUT
+  ALLOW -->|no| FAIL["Return normalized upstream failure"]
+  METRIC --> ADAPT["Bounded threshold adaptation"]
+```
+
+### 3. Runtime narrative
+
+```mermaid
+sequenceDiagram
+  actor Client
+  participant G as HTTP Gateway
+  participant R as Router
+  participant C as Circuit/Candidate Manager
+  participant U as Upstream Provider
+  participant O as Metrics/Adaptation
+  Client->>G: POST /v1/chat/completions model=auto
+  G->>R: validated canonical request
+  R->>R: cache, features, score, policy, tier
+  R->>C: ordered primary and fallback candidates
+  C->>U: primary request
+  alt success
+    U-->>G: response or token stream
+  else 429 / 5xx / timeout
+    C->>U: single allowed cascade
+    U-->>G: fallback response or failure
+  end
+  C->>O: latency, error, circuit and tier outcome
+  O->>R: bounded adaptive thresholds
+  G-->>Client: response + score/tier/model/circuit/cache headers
+```
+
+### 4. Reliability model
+
+```mermaid
+stateDiagram-v2
+  [*] --> RECEIVED
+  RECEIVED --> CACHE_HIT: identical safe replay
+  RECEIVED --> CLASSIFIED: cache miss
+  CLASSIFIED --> POLICY_APPLIED --> CANDIDATES_READY --> PRIMARY_IN_FLIGHT
+  PRIMARY_IN_FLIGHT --> STREAMING: success
+  PRIMARY_IN_FLIGHT --> CASCADE_IN_FLIGHT: allowed retryable failure
+  CASCADE_IN_FLIGHT --> STREAMING: success
+  PRIMARY_IN_FLIGHT --> FAILED: terminal failure
+  CASCADE_IN_FLIGHT --> FAILED: terminal failure
+  STREAMING --> COMPLETE
+```
+
+<!-- architecture-atlas-v5:end -->
