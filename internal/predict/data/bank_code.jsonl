@@ -1,0 +1,87 @@
+{"t":"Write a Python function to reverse a string","d":0.06,"a":{"coding":1},"o":60}
+{"t":"How do I check if a list is empty in Python?","d":0.05,"a":{"coding":1},"o":60}
+{"t":"Write a regex that matches US phone numbers","d":0.14,"a":{"coding":1},"o":100}
+{"t":"How do I center a div in CSS?","d":0.08,"a":{"coding":1},"o":150}
+{"t":"Rename the variable `x` to something more descriptive in this function","d":0.06,"a":{"coding":0.8,"instruction":0.2},"o":150}
+{"t":"Write a git commit message for: added input validation to signup form, fixed README typo","d":0.06,"a":{"coding":0.5,"creative":0.5},"o":40}
+{"t":"What does `git rebase -i` do?","d":0.1,"a":{"coding":0.7,"knowledge":0.3},"o":250}
+{"t":"Write a SQL query to get the top 5 customers by total order amount","d":0.14,"a":{"coding":1},"o":120}
+{"t":"Write a bash one-liner to find .log files larger than 100MB","d":0.12,"a":{"coding":1},"o":60}
+{"t":"Convert this JavaScript function to TypeScript with proper types","d":0.16,"a":{"coding":1},"o":250}
+{"t":"Add docstrings to these Python functions","d":0.1,"a":{"coding":0.7,"instruction":0.3},"o":400}
+{"t":"Explain what this code does:\n```python\nresult = [x**2 for x in range(10) if x % 2 == 0]\n```","d":0.08,"a":{"coding":1},"o":120}
+{"t":"Fix this error: TypeError: 'NoneType' object is not subscriptable","d":0.2,"a":{"coding":0.8,"reasoning":0.2},"o":250}
+{"t":"Why am I getting 'undefined is not a function' in my React component?","d":0.22,"a":{"coding":0.8,"reasoning":0.2},"o":300}
+{"t":"Write a Dockerfile for a Node.js Express app","d":0.14,"a":{"coding":1},"o":200}
+{"t":"Write unit tests for this function using pytest","d":0.24,"a":{"coding":1},"o":500}
+{"t":"Write a React component for a todo list with add, delete and toggle complete","d":0.24,"a":{"coding":1},"o":600}
+{"t":"Create a REST API in FastAPI with CRUD endpoints for books using SQLAlchemy and Pydantic","d":0.32,"a":{"coding":1},"o":1200}
+{"t":"Write a Python script that downloads product prices from an API and saves them to CSV with retries","d":0.28,"a":{"coding":1},"o":700}
+{"t":"Implement binary search in Go","d":0.12,"a":{"coding":1},"o":200}
+{"t":"Implement an LRU cache in Java with O(1) get and put","d":0.3,"a":{"coding":0.8,"reasoning":0.2},"o":500}
+{"t":"Implement Dijkstra's algorithm in C++ with a priority queue","d":0.32,"a":{"coding":0.8,"reasoning":0.2},"o":500}
+{"t":"Refactor this 200-line function into smaller testable functions without changing behavior","d":0.42,"a":{"coding":0.85,"reasoning":0.15},"o":1500}
+{"t":"Migrate this Express.js app from callbacks to async/await and add error handling middleware","d":0.4,"a":{"coding":1},"o":1500}
+{"t":"My Django order list view is slow. Here are the view and models. How do I fix the N+1 queries?","d":0.38,"a":{"coding":0.8,"reasoning":0.2},"o":600}
+{"t":"Set up a GitHub Actions workflow that tests on Python 3.10-3.12, caches pip, and deploys on tag push","d":0.36,"a":{"coding":0.9,"knowledge":0.1},"o":700}
+{"t":"Write a Terraform module for a VPC with public and private subnets across three AZs and NAT gateways","d":0.42,"a":{"coding":0.9,"knowledge":0.1},"o":1400}
+{"t":"Debug this: my Python asyncio program hangs forever when I gather these tasks","d":0.45,"a":{"coding":0.7,"reasoning":0.3},"o":600}
+{"t":"My C program crashes only when compiled with -O2. Here's the code; find the undefined behavior.","d":0.58,"a":{"coding":0.7,"reasoning":0.3},"o":700}
+{"t":"Our Kubernetes pods get OOMKilled intermittently though memory graphs look flat. Here are manifests and JVM flags.","d":0.6,"a":{"coding":0.5,"reasoning":0.4,"knowledge":0.1},"o":900}
+{"t":"Write a Rust lock-free MPMC queue with correct memory orderings and explain how you avoid the ABA problem","d":0.84,"a":{"coding":0.7,"reasoning":0.3},"o":2000}
+{"t":"Implement a concurrent hash map in C++ with fine-grained locking and lock-free reads using hazard pointers","d":0.84,"a":{"coding":0.7,"reasoning":0.3},"o":2200}
+{"t":"There's a race in this Go code that deadlocks under load every few hours. Find it and argue why your fix is correct.","d":0.76,"a":{"coding":0.6,"reasoning":0.4},"o":1200}
+{"t":"Design and implement a Raft consensus module in Go with leader election, log replication, snapshots and membership changes, with tests","d":0.9,"a":{"coding":0.6,"reasoning":0.25,"agentic":0.15},"o":6000}
+{"t":"Write an incremental tri-color mark and sweep garbage collector with write barriers for this toy runtime","d":0.86,"a":{"coding":0.7,"reasoning":0.3},"o":3000}
+{"t":"Implement a Pratt parser and bytecode compiler for a small expression language with closures","d":0.72,"a":{"coding":0.8,"reasoning":0.2},"o":3000}
+{"t":"Write a CUDA kernel for tiled matrix multiplication with shared memory and explain occupancy tradeoffs","d":0.7,"a":{"coding":0.7,"reasoning":0.2,"math":0.1},"o":1500}
+{"t":"Optimize this hot loop in C with AVX2 SIMD and explain alignment and dependency chains","d":0.72,"a":{"coding":0.7,"reasoning":0.3},"o":1200}
+{"t":"Our p99 latency went from 40ms to 300ms after a JVM upgrade. Here are flame graphs and GC logs. Find the root cause.","d":0.74,"a":{"coding":0.4,"reasoning":0.5,"long_context":0.1},"o":1000}
+{"t":"Write a formally verified red-black tree in Coq with proofs of the balance invariants","d":0.93,"a":{"coding":0.4,"math":0.4,"reasoning":0.2},"o":4000}
+{"t":"Design a multi-region active-active payments system with exactly-once semantics, idempotency and reconciliation; discuss failure modes","d":0.86,"a":{"reasoning":0.5,"coding":0.3,"knowledge":0.2},"o":3000}
+{"t":"Design a URL shortener that handles 10k writes per second","d":0.48,"a":{"reasoning":0.5,"coding":0.3,"knowledge":0.2},"o":1200}
+{"t":"How would you design a social media home timeline at scale? Discuss fan-out on write vs read.","d":0.55,"a":{"reasoning":0.5,"coding":0.2,"knowledge":0.3},"o":1500}
+{"t":"Plan migrating our 2M-line Java monolith to services with zero downtime: data ownership, strangler fig, team topology","d":0.8,"a":{"reasoning":0.5,"coding":0.3,"knowledge":0.2},"o":3000}
+{"t":"Upgrade this codebase from React 16 class components to React 18 hooks across all 80 components, keeping tests passing","d":0.74,"a":{"coding":0.6,"agentic":0.3,"long_context":0.1},"o":8000}
+{"t":"Here is our whole repository. Find every place a database query is built by string concatenation and convert it to parameterized queries.","d":0.7,"a":{"long_context":0.4,"coding":0.4,"agentic":0.2},"o":4000}
+{"t":"Write a function that checks whether a string is a palindrome, ignoring punctuation and case","d":0.1,"a":{"coding":1},"o":120}
+{"t":"FizzBuzz in JavaScript","d":0.04,"a":{"coding":1},"o":80}
+{"t":"Write a Python class for a bank account with deposit, withdraw and balance methods","d":0.1,"a":{"coding":1},"o":200}
+{"t":"How do I read a CSV with pandas and drop rows with missing values?","d":0.08,"a":{"coding":1},"o":120}
+{"t":"Write a SQL query with window functions for a 7-day rolling average of revenue per region","d":0.26,"a":{"coding":0.9,"math":0.1},"o":200}
+{"t":"Optimize this slow PostgreSQL query; here is EXPLAIN ANALYZE and the table definitions","d":0.48,"a":{"coding":0.7,"reasoning":0.3},"o":700}
+{"t":"Design the database schema for a multi-tenant project management SaaS with row-level isolation","d":0.46,"a":{"coding":0.6,"reasoning":0.4},"o":1200}
+{"t":"Write a Kubernetes operator in Go that reconciles a custom resource for managed PostgreSQL clusters with backups and failover","d":0.78,"a":{"coding":0.8,"reasoning":0.2},"o":5000}
+{"t":"Write an LLVM pass for loop-invariant code motion with alias analysis","d":0.82,"a":{"coding":0.7,"reasoning":0.3},"o":3000}
+{"t":"Build a collaborative text editor backend with CRDTs; explain convergence and implement the core data structure","d":0.82,"a":{"coding":0.6,"reasoning":0.4},"o":4000}
+{"t":"Explain how the Linux kernel's RCU works and when to prefer it over reader-writer locks","d":0.58,"a":{"knowledge":0.5,"coding":0.3,"reasoning":0.2},"o":1200}
+{"t":"Train a PyTorch CNN on CIFAR-10 with augmentation and a cosine learning-rate schedule","d":0.32,"a":{"coding":0.9,"knowledge":0.1},"o":900}
+{"t":"My transformer training loss goes NaN after 2k steps with mixed precision. Here's the config. Diagnose.","d":0.62,"a":{"coding":0.4,"reasoning":0.4,"knowledge":0.2},"o":900}
+{"t":"Implement FlashAttention forward and backward in Triton and verify numerics against a reference","d":0.88,"a":{"coding":0.6,"math":0.3,"reasoning":0.1},"o":4000}
+{"t":"What's the time complexity of quicksort?","d":0.06,"a":{"coding":0.5,"knowledge":0.5},"o":80}
+{"t":"Explain dynamic programming with the knapsack problem","d":0.26,"a":{"coding":0.5,"reasoning":0.3,"math":0.2},"o":700}
+{"t":"Solve minimum window substring in O(n) with explanation","d":0.44,"a":{"coding":0.7,"reasoning":0.3},"o":700}
+{"t":"Solve this 2400-rated competitive programming problem: count labeled trees with degree constraints modulo 1e9+7","d":0.86,"a":{"coding":0.4,"math":0.4,"reasoning":0.2},"o":1500}
+{"t":"Prove this greedy interval scheduling algorithm is optimal with an exchange argument","d":0.42,"a":{"reasoning":0.5,"math":0.3,"coding":0.2},"o":600}
+{"t":"Show that 3-SAT reduces to Independent Set and prove the reduction correct","d":0.56,"a":{"reasoning":0.4,"math":0.4,"coding":0.2},"o":900}
+{"t":"Write a Python script to rename all files in a folder to lowercase","d":0.08,"a":{"coding":1},"o":100}
+{"t":"What does this error mean: ECONNREFUSED 127.0.0.1:5432","d":0.08,"a":{"coding":0.8,"knowledge":0.2},"o":150}
+{"t":"Write a Makefile for a C project with src/ and include/ directories","d":0.14,"a":{"coding":1},"o":200}
+{"t":"Explain the difference between let, const and var in JavaScript","d":0.07,"a":{"coding":0.7,"knowledge":0.3},"o":250}
+{"t":"How do Rust lifetimes work? Show an example that fails to compile and the fix","d":0.36,"a":{"coding":0.8,"knowledge":0.2},"o":800}
+{"t":"Explain monads in Haskell with examples beyond Maybe","d":0.42,"a":{"coding":0.6,"knowledge":0.2,"reasoning":0.2},"o":1000}
+{"t":"Implement Hindley-Milner type inference with let-polymorphism in OCaml","d":0.78,"a":{"coding":0.6,"reasoning":0.3,"math":0.1},"o":2500}
+{"t":"Write a WebSocket chat server in Node with rooms and login","d":0.3,"a":{"coding":1},"o":900}
+{"t":"Write a SwiftUI view that lists items from an API with pull to refresh and pagination","d":0.3,"a":{"coding":1},"o":800}
+{"t":"Write an Android Kotlin ViewModel with coroutines and Room for offline caching","d":0.34,"a":{"coding":1},"o":900}
+{"t":"Build a full-stack Next.js app with sign-in, Stripe subscriptions, Postgres and an admin dashboard","d":0.64,"a":{"coding":0.7,"agentic":0.3},"o":8000}
+{"t":"Implement the OAuth 2.0 authorization code flow with PKCE in a single-page app","d":0.46,"a":{"coding":0.7,"knowledge":0.3},"o":1200}
+{"t":"Write a high-performance HTTP load balancer in Rust with consistent hashing, health checks and graceful draining","d":0.76,"a":{"coding":0.8,"reasoning":0.2},"o":4000}
+{"t":"Our distributed cache stampedes after deploys and occasionally serves stale data across regions. Diagnose and design a fix.","d":0.72,"a":{"reasoning":0.5,"coding":0.4,"knowledge":0.1},"o":1500}
+{"t":"Write a script that pings a list of hosts and prints which are down","d":0.08,"a":{"coding":1},"o":120}
+{"t":"Explain what Kubernetes is","d":0.1,"a":{"knowledge":0.6,"coding":0.4},"o":350}
+{"t":"Set up nginx as a reverse proxy with TLS for two apps on different subdomains","d":0.22,"a":{"coding":0.8,"knowledge":0.2},"o":400}
+{"t":"Now do the same for the other three functions","d":0.2,"a":{"coding":0.6,"instruction":0.4},"o":800}
+{"t":"That didn't work, I still get the same error","d":0.3,"a":{"coding":0.6,"reasoning":0.4},"o":500}
+{"t":"Write a VBA macro that merges all sheets in a workbook into one","d":0.2,"a":{"coding":1},"o":300}
+{"t":"Write a parser spec: list edge cases, a table of inputs and expected outputs, then the implementation and tests, following the template precisely","d":0.5,"a":{"instruction":0.5,"coding":0.5},"o":2000}

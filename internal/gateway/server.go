@@ -1,486 +1,798 @@
+// Package gateway is the HTTP server: OpenAI-compatible chat completions with
+// routing, plus route preview, feedback, model listing, health, metrics and
+// admin endpoints.
 package gateway
 
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
-	"log"
+	"log/slog"
 	"net/http"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
+	apiopenai "github.com/desenyon/modelrouter/internal/api/openai"
 	"github.com/desenyon/modelrouter/internal/cache"
-	"github.com/desenyon/modelrouter/internal/cascade"
-	"github.com/desenyon/modelrouter/internal/classifier"
+	"github.com/desenyon/modelrouter/internal/canon"
+	"github.com/desenyon/modelrouter/internal/catalog"
 	"github.com/desenyon/modelrouter/internal/config"
+	"github.com/desenyon/modelrouter/internal/control"
+	"github.com/desenyon/modelrouter/internal/dispatch"
+	"github.com/desenyon/modelrouter/internal/embed"
 	"github.com/desenyon/modelrouter/internal/health"
-	"github.com/desenyon/modelrouter/internal/metrics"
+	"github.com/desenyon/modelrouter/internal/learn"
+	"github.com/desenyon/modelrouter/internal/optimize"
+	"github.com/desenyon/modelrouter/internal/predict"
+	"github.com/desenyon/modelrouter/internal/provider"
+	"github.com/desenyon/modelrouter/internal/provider/anthropic"
+	"github.com/desenyon/modelrouter/internal/provider/compat"
+	"github.com/desenyon/modelrouter/internal/provider/gemini"
+	pvopenai "github.com/desenyon/modelrouter/internal/provider/openai"
 	"github.com/desenyon/modelrouter/internal/router"
-	"github.com/desenyon/modelrouter/internal/upstream"
+	"github.com/desenyon/modelrouter/internal/session"
+	"github.com/desenyon/modelrouter/internal/telemetry"
 )
 
-// Server is the OpenAI-compatible routing gateway.
+// Version is reported by the server and CLI.
+const Version = "3.0.0"
+
+// Server is the gateway.
 type Server struct {
-	cfg      config.Config
-	engine   *router.Engine
-	upstream *upstream.Client
-	metrics  *metrics.Collector
-	cache    *cache.Store
-	health   *health.Tracker
-	mux      *http.ServeMux
-	log      *log.Logger
+	cfg       config.Config
+	log       *slog.Logger
+	Router    *router.Router
+	disp      *dispatch.Dispatcher
+	providers map[string]provider.Provider
+	cache     *cache.Store
+	learner   *learn.Learner
+	budget    *control.Budget
+	health    *health.Tracker
+	embedder  *embed.Model
+	dlog      *telemetry.DecisionLog
+	reg       *telemetry.Registry
+	m         metrics
+	mux       *http.ServeMux
+	started   time.Time
 }
 
-// New constructs the gateway HTTP server.
-func New(cfg config.Config, logger *log.Logger) *Server {
-	if logger == nil {
-		logger = log.Default()
-	}
-	ht := health.New()
-	s := &Server{
-		cfg:      cfg,
-		engine:   router.New(cfg, ht),
-		upstream: upstream.New(cfg.Upstream.BaseURL, cfg.Upstream.APIKey, cfg.Upstream.Timeout),
-		metrics:  metrics.New(),
-		health:   ht,
-		mux:      http.NewServeMux(),
-		log:      logger,
-	}
-	if cfg.Cache.Enabled {
-		s.cache = cache.New(cfg.Cache.Capacity)
-	}
-	s.routes()
-	return s
+type metrics struct {
+	requests *telemetry.CounterVec
+	cost     *telemetry.CounterVec
+	tokens   *telemetry.CounterVec
+	attempts *telemetry.CounterVec
+	cache    *telemetry.CounterVec
+	routing  *telemetry.HistogramVec
+	ttft     *telemetry.HistogramVec
+	latency  *telemetry.HistogramVec
+	diff     *telemetry.HistogramVec
 }
+
+// Options inject dependencies (tests); zero values build real ones.
+type Options struct {
+	Logger    *slog.Logger
+	Embedder  *embed.Model
+	Providers map[string]provider.Provider
+}
+
+// New assembles the gateway. It loads (and if allowed downloads) the
+// embedder, which the router requires.
+func New(ctx context.Context, cfg config.Config, opt Options) (*Server, error) {
+	log := opt.Logger
+	if log == nil {
+		log = slog.Default()
+	}
+	cat, err := cfg.BuildCatalog()
+	if err != nil {
+		return nil, err
+	}
+	em := opt.Embedder
+	if em == nil {
+		em, err = embed.Ensure(ctx, cfg.Embedder.Dir, cfg.AutoDownload(), func(f string, a ...any) { log.Info(fmt.Sprintf(f, a...)) })
+		if err != nil {
+			return nil, fmt.Errorf("embedder (required): %w", err)
+		}
+	}
+	pred, err := predict.New(em, predict.DefaultConfig())
+	if err != nil {
+		return nil, err
+	}
+	s := &Server{cfg: cfg, log: log, embedder: em, started: time.Now(), mux: http.NewServeMux()}
+	s.health = health.New(health.DefaultConfig())
+	s.budget = control.NewBudget(cfg.Budget.USDPerHour)
+	s.providers = opt.Providers
+	if s.providers == nil {
+		s.providers = buildProviders(cfg)
+	}
+	if !cfg.Learning.Disabled {
+		s.learner = learn.New(cat, pred, learn.Config{LearningRate: cfg.Learning.LearningRate, StatePath: cfg.Learning.StatePath})
+		if err := s.learner.Load(em.Name()); err != nil {
+			log.Warn("could not load learned state", "err", err)
+		}
+	}
+	defMode, _ := optimize.ParseMode(cfg.Router.DefaultMode)
+	s.Router = &router.Router{
+		Catalog: cat, Predictor: pred, Health: s.health, Sessions: session.New(200_000, 30*time.Minute),
+		Learner: s.learner, Budget: s.budget, Objectives: cfg.Objectives(), DefaultMode: defMode,
+		Ready:   func(p string) bool { _, ok := s.providers[p]; return ok },
+		Explore: cfg.Router.ExploreRate, SwitchUSD: cfg.Router.SwitchPenalty,
+	}
+	d := cfg.Dispatch
+	s.disp = dispatch.New(s.providers, s.health, control.NewRetryBudget(d.RetryRatio), dispatch.Config{
+		MaxAttempts: d.MaxAttempts, FirstTokenTimeout: d.FirstTokenTimeout, IdleTimeout: d.IdleTimeout,
+		Hedge: d.Hedge, HedgeMinDelay: d.HedgeMinDelay, QualityRetry: cfg.QualityRetry(),
+	})
+	if cfg.CacheEnabled() {
+		s.cache = cache.New(cfg.Cache.MaxBytes, cfg.Cache.TTL)
+	}
+	if cfg.Telemetry.DecisionLog != "" {
+		if s.dlog, err = telemetry.OpenDecisionLog(cfg.Telemetry.DecisionLog, cfg.Telemetry.Sample); err != nil {
+			return nil, err
+		}
+	}
+	s.initMetrics()
+	s.routes()
+	return s, nil
+}
+
+func buildProviders(cfg config.Config) map[string]provider.Provider {
+	hc := provider.NewHTTPClient(cfg.Dispatch.ConnectTimeout)
+	m := map[string]provider.Provider{}
+	p := cfg.Providers
+	if p.OpenAI.APIKey != "" && !p.OpenAI.Disabled {
+		m["openai"] = pvopenai.New("openai", p.OpenAI.BaseURL, p.OpenAI.APIKey, p.OpenAI.Organization, hc)
+	}
+	if p.Anthropic.APIKey != "" && !p.Anthropic.Disabled {
+		m["anthropic"] = anthropic.New(p.Anthropic.BaseURL, p.Anthropic.APIKey, hc, cfg.AnthropicServerFallbacks())
+	}
+	if p.Gemini.APIKey != "" && !p.Gemini.Disabled {
+		m["gemini"] = gemini.New(p.Gemini.BaseURL, p.Gemini.APIKey, hc)
+	}
+	for _, e := range p.Extra {
+		m[e.Name] = compat.New(e.Name, e.BaseURL, e.APIKey, e.Headers, hc)
+	}
+	return m
+}
+
+// Providers lists configured provider names.
+func (s *Server) Providers() []string {
+	out := make([]string, 0, len(s.providers))
+	for k := range s.providers {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func (s *Server) initMetrics() {
+	r := telemetry.NewRegistry()
+	s.reg = r
+	s.m = metrics{
+		requests: r.NewCounterVec("modelrouter_requests_total", "Routed requests by final model and outcome.", "model", "provider", "tier", "mode", "outcome"),
+		cost:     r.NewCounterVec("modelrouter_cost_usd_total", "Upstream spend in USD (all attempts).", "model"),
+		tokens:   r.NewCounterVec("modelrouter_tokens_total", "Tokens by model and kind.", "model", "kind"),
+		attempts: r.NewCounterVec("modelrouter_attempts_total", "Upstream attempts by model and outcome.", "model", "outcome"),
+		cache:    r.NewCounterVec("modelrouter_cache_total", "Response cache lookups.", "result"),
+		routing:  r.NewHistogramVec("modelrouter_routing_seconds", "Routing decision latency.", []float64{25e-6, 50e-6, 100e-6, 250e-6, 500e-6, 1e-3, 5e-3}),
+		ttft:     r.NewHistogramVec("modelrouter_ttft_seconds", "Upstream time to first visible token.", []float64{.1, .25, .5, 1, 2, 5, 10, 30, 60}, "provider"),
+		latency:  r.NewHistogramVec("modelrouter_request_seconds", "End-to-end request latency.", []float64{.25, .5, 1, 2, 5, 10, 30, 60, 120}, "mode"),
+		diff:     r.NewHistogramVec("modelrouter_difficulty", "Predicted request difficulty.", []float64{.1, .2, .3, .4, .5, .6, .7, .8, .9, 1}),
+	}
+	r.NewGaugeFunc("modelrouter_budget_lambda", "Spend controller cost multiplier.", func() map[string]float64 {
+		return map[string]float64{"": s.budget.Lambda()}
+	})
+	r.NewGaugeFunc("modelrouter_breaker_open", "1 if the model's circuit is open.", func() map[string]float64 {
+		out := map[string]float64{}
+		for _, h := range s.health.SnapshotAll() {
+			v := 0.0
+			if h.State == health.Open {
+				v = 1
+			}
+			out[h.Model] = v
+		}
+		return out
+	}, "model")
+	r.NewGaugeFunc("modelrouter_learned_exemplars", "Exemplars learned from feedback.", func() map[string]float64 {
+		_, n := s.Router.Predictor.Size()
+		return map[string]float64{"": float64(n)}
+	})
+}
+
+// Handler returns the root handler.
+func (s *Server) Handler() http.Handler { return s.mux }
 
 func (s *Server) routes() {
-	s.mux.HandleFunc("GET /healthz", s.handleHealth)
-	s.mux.HandleFunc("GET /metrics", s.handleMetrics)
-	s.mux.HandleFunc("GET /v1/models", s.auth(s.handleModels))
 	s.mux.HandleFunc("POST /v1/chat/completions", s.auth(s.handleChat))
-	s.mux.HandleFunc("POST /v1/route", s.auth(s.handleRoutePreview))
-	s.mux.HandleFunc("GET /", s.handleRoot)
+	s.mux.HandleFunc("POST /chat/completions", s.auth(s.handleChat))
+	s.mux.HandleFunc("POST /v1/route", s.auth(s.handleRoute))
+	s.mux.HandleFunc("POST /v1/feedback", s.auth(s.handleFeedback))
+	s.mux.HandleFunc("GET /v1/models", s.auth(s.handleModels))
+	s.mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, map[string]any{"status": "ok"}) })
+	s.mux.HandleFunc("GET /readyz", s.handleReady)
+	s.mux.HandleFunc("GET /metrics", s.handleMetrics)
+	s.mux.HandleFunc("GET /admin/state", s.admin(s.handleState))
+	s.mux.HandleFunc("GET /{$}", s.handleRoot)
 }
 
-// Handler returns the root HTTP handler.
-func (s *Server) Handler() http.Handler {
-	return s.withCORS(s.mux)
-}
-
-// ListenAndServe starts the gateway.
-func (s *Server) ListenAndServe() error {
-	srv := &http.Server{
-		Addr:              s.cfg.Listen,
-		Handler:           s.Handler(),
-		ReadHeaderTimeout: 10 * time.Second,
+// Background runs periodic maintenance until ctx ends, then persists state.
+func (s *Server) Background(ctx context.Context) {
+	tick := time.NewTicker(10 * time.Second)
+	defer tick.Stop()
+	flushEvery := s.cfg.Learning.FlushInterval
+	if flushEvery <= 0 {
+		flushEvery = 30 * time.Second
 	}
-	luna, terra := s.engine.Thresholds()
-	s.log.Printf("modelrouter gateway listening on %s (upstream %s, mode %s)",
-		s.cfg.Listen, s.cfg.Upstream.BaseURL, s.cfg.ModeOrDefault())
-	s.log.Printf("tiers luna=%s terra=%s sol=%s | thresholds luna≤%.2f terra≤%.2f | cache=%v cascade=%v adaptive=%v",
-		s.cfg.Models.Luna.Primary, s.cfg.Models.Terra.Primary, s.cfg.Models.Sol.Primary,
-		luna, terra, s.cfg.Cache.Enabled, s.cfg.Cascade.Enabled, s.cfg.Router.Adaptive)
-	return srv.ListenAndServe()
+	lastFlush, lastSave := time.Now(), time.Now()
+	for {
+		select {
+		case <-ctx.Done():
+			s.Close()
+			return
+		case <-tick.C:
+			s.budget.Tick()
+			if s.learner != nil && time.Since(lastFlush) >= flushEvery {
+				if n := s.learner.Flush(); n > 0 {
+					s.log.Info("learned exemplars added", "n", n)
+				}
+				lastFlush = time.Now()
+			}
+			if s.learner != nil && time.Since(lastSave) >= 5*time.Minute {
+				if err := s.learner.Save(s.embedder.Name()); err != nil {
+					s.log.Warn("save learned state", "err", err)
+				}
+				lastSave = time.Now()
+			}
+		}
+	}
+}
+
+// Close persists learned state and flushes logs.
+func (s *Server) Close() {
+	if s.learner != nil {
+		if err := s.learner.Save(s.embedder.Name()); err != nil {
+			s.log.Warn("save learned state", "err", err)
+		}
+	}
+	if s.dlog != nil {
+		_ = s.dlog.Close()
+	}
 }
 
 func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if s.cfg.APIKey == "" {
+		if len(s.cfg.APIKeys) == 0 {
 			next(w, r)
 			return
 		}
-		h := r.Header.Get("Authorization")
-		token := strings.TrimPrefix(h, "Bearer ")
-		if token == "" {
-			token = r.Header.Get("X-API-Key")
+		tok := bearer(r)
+		for _, k := range s.cfg.APIKeys {
+			if subtle.ConstantTimeCompare([]byte(tok), []byte(k)) == 1 {
+				next(w, r)
+				return
+			}
 		}
-		if token != s.cfg.APIKey {
-			writeErr(w, http.StatusUnauthorized, "invalid api key", "authentication_error")
+		writeError(w, http.StatusUnauthorized, "invalid API key", "authentication_error")
+	}
+}
+
+func (s *Server) admin(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if s.cfg.AdminKey != "" {
+			if subtle.ConstantTimeCompare([]byte(bearer(r)), []byte(s.cfg.AdminKey)) != 1 {
+				writeError(w, http.StatusUnauthorized, "invalid admin key", "authentication_error")
+				return
+			}
+			next(w, r)
 			return
 		}
-		next(w, r)
+		s.auth(next)(w, r)
 	}
 }
 
-func (s *Server) withCORS(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-API-Key, X-Optimize-For, Cache-Control")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
-			return
+func bearer(r *http.Request) string {
+	if t, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok {
+		return strings.TrimSpace(t)
+	}
+	if k := r.Header.Get("X-API-Key"); k != "" {
+		return k
+	}
+	return r.Header.Get("api-key")
+}
+
+// applyHeaders lets clients set routing options via headers.
+func applyHeaders(r *http.Request, req *canon.Request) {
+	h := r.Header
+	if v := h.Get("X-Modelrouter-Mode"); v != "" {
+		req.Router.Mode = v
+	} else if v := h.Get("X-Optimize-For"); v != "" && req.Router.Mode == "" {
+		req.Router.Mode = v
+	}
+	if v := h.Get("X-Modelrouter-Session"); v != "" {
+		req.Router.SessionID = v
+	}
+	if v := h.Get("X-Modelrouter-Max-Cost"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			req.Router.MaxCostUSD = f
 		}
-		next.ServeHTTP(w, r)
-	})
+	}
+	if v := h.Get("X-Modelrouter-Min-Quality"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			req.Router.MinQuality = f
+		}
+	}
+	if v := h.Get("X-Modelrouter-Allow"); v != "" {
+		req.Router.Allow = append(req.Router.Allow, strings.Split(v, ",")...)
+	}
+	if v := h.Get("X-Modelrouter-Deny"); v != "" {
+		req.Router.Deny = append(req.Router.Deny, strings.Split(v, ",")...)
+	}
+	if h.Get("X-Modelrouter-Explain") == "1" || h.Get("X-Modelrouter-Explain") == "true" {
+		req.Router.Explain = true
+	}
+	cc := strings.ToLower(h.Get("Cache-Control"))
+	if strings.Contains(cc, "no-cache") || strings.Contains(cc, "no-store") {
+		req.Router.NoCache = true
+	}
+	if h.Get("X-Modelrouter-Cache") == "force" {
+		req.Router.ForceCache = true
+	}
 }
 
-func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
-		http.NotFound(w, r)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"name":   "modelrouter",
-		"role":   "complex-yet-efficient model routing gateway",
-		"policy": "luna-first — sol only when the task demands it",
-		"docs":   "https://github.com/desenyon/modelrouter",
-		"pipeline": []string{
-			"fingerprint-cache", "features", "score", "policy",
-			"tier", "candidate+circuit", "proxy", "cascade", "adapt",
-		},
-		"endpoints": []string{
-			"GET  /healthz",
-			"GET  /metrics",
-			"GET  /v1/models",
-			"POST /v1/chat/completions",
-			"POST /v1/route",
-		},
-	})
-}
-
-func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
-	luna, terra := s.engine.Thresholds()
-	writeJSON(w, http.StatusOK, map[string]any{
-		"status":            "ok",
-		"upstream":          s.upstream.BaseURL(),
-		"upstream_key_set":  s.upstream.HasAPIKey(),
-		"mode":              s.cfg.ModeOrDefault(),
-		"luna_max":          luna,
-		"terra_max":         terra,
-		"open_circuits":     s.health.OpenCount(),
-		"cache_enabled":     s.cfg.Cache.Enabled,
-		"cascade_enabled":   s.cfg.Cascade.Enabled,
-		"adaptive_enabled":  s.cfg.Router.Adaptive,
-	})
-}
-
-func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
-	snap := s.metrics.Snapshot()
-	luna, terra := s.engine.Thresholds()
-	out := map[string]any{
-		"gateway":    snap,
-		"circuits":   s.health.SnapshotAll(),
-		"thresholds": map[string]float64{"luna_max": luna, "terra_max": terra},
-	}
-	if s.cache != nil {
-		hits, misses, size := s.cache.Stats()
-		out["cache"] = map[string]any{"hits": hits, "misses": misses, "size": size}
-	}
-	writeJSON(w, http.StatusOK, out)
-}
-
-func (s *Server) handleModels(w http.ResponseWriter, _ *http.Request) {
-	created := time.Now().Unix()
-	list := ModelList{Object: "list"}
-	for _, e := range s.engine.Registry().Catalog() {
-		list.Data = append(list.Data, ModelEntry{
-			ID: e.ID, Object: "model", Created: created, OwnedBy: e.OwnedBy,
-		})
-	}
-	writeJSON(w, http.StatusOK, list)
-}
-
-func (s *Server) handleRoutePreview(w http.ResponseWriter, r *http.Request) {
-	dec, _, err := s.decide(r)
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error(), "invalid_request_error")
-		return
-	}
-	writeJSON(w, http.StatusOK, RoutePreview{Decision: dec, At: time.Now().UTC()})
+func newID() string {
+	b := make([]byte, 12)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
 }
 
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
-	dec, raw, chat, err := s.decideFull(r)
+	req, err := apiopenai.Decode(r.Body)
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error(), "invalid_request_error")
+		writeError(w, http.StatusBadRequest, err.Error(), "invalid_request_error")
 		return
 	}
+	applyHeaders(r, req)
+	dec, err := s.Router.Route(req)
+	if err != nil {
+		code := http.StatusBadRequest
+		if strings.HasPrefix(err.Error(), "no model can serve") {
+			code = http.StatusServiceUnavailable
+		}
+		writeError(w, code, err.Error(), "routing_error")
+		return
+	}
+	s.m.routing.Observe(dec.RoutingTime.Seconds())
+	s.m.diff.Observe(dec.Plan.Prediction.Difficulty)
+	reqID := newID()
 
-	noCache := strings.Contains(strings.ToLower(r.Header.Get("Cache-Control")), "no-cache")
-	var fp string
-	if s.cache != nil && !chat.Stream && !noCache && !dec.Passthrough {
-		fp = cache.Fingerprint(dec.RequestedModel, string(dec.Mode), chat.Messages, chat.Tools, isStructured(chat.ResponseFormat))
-		if ent, ok := s.cache.Get(fp); ok {
-			s.metrics.RecordCacheHit()
-			s.metrics.RecordRoute(ent.Tier, false, time.Since(start), false, len(raw), len(ent.Body))
-			s.setRouteHeaders(w, dec, true, "")
-			w.Header().Set("Content-Type", ent.ContentType)
-			w.Header().Set("X-Modelrouter-Cache", "HIT")
-			w.WriteHeader(ent.Status)
-			_, _ = w.Write(ent.Body)
+	// Response cache (deterministic requests only).
+	var ckey string
+	if s.cache != nil && cache.Cacheable(req) {
+		ckey = cache.Key(req, strings.ToLower(req.Model)+"|"+string(dec.Mode))
+		if ent, ok := s.cache.Get(ckey); ok {
+			s.m.cache.Inc("hit")
+			s.serveCached(w, req, dec, reqID, ent)
 			return
 		}
+		s.m.cache.Inc("miss")
 	}
 
 	ctx := r.Context()
-	if s.cfg.Upstream.Timeout > 0 {
+	if t := s.cfg.Dispatch.TotalTimeout; t > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, s.cfg.Upstream.Timeout)
+		ctx, cancel = context.WithTimeout(ctx, t)
 		defer cancel()
 	}
+	cacheHint := dec.SessionKey != "" && (dec.Session != nil || dec.Plan.Features.UserTurns > 1 || dec.Plan.Features.InToolLoop)
+	job := dispatch.Job{Req: req, Plan: dec.Plan, Stream: req.Stream, RequestID: reqID, SessionKey: dec.SessionKey, CacheHint: cacheHint}
 
-	if chat.Stream {
-		final, cascLabel, status, upErr := s.proxyStream(ctx, w, raw, dec)
-		latency := time.Since(start)
-		success := upErr == nil && status > 0 && status < 400
-		em := ""
-		if upErr != nil {
-			em = upErr.Error()
-		} else if !success {
-			em = fmt.Sprintf("status %d", status)
+	var res dispatch.Result
+	if req.Stream {
+		sink := &streamSink{s: s, w: w, req: req, dec: dec, reqID: reqID}
+		job.Sink = sink
+		res = s.disp.Run(ctx, job)
+		if res.Committed {
+			if res.Err != nil {
+				sink.sw.Error(res.Err.Error(), "upstream_error")
+			} else {
+				sink.sw.Close()
+			}
+		} else if res.Err != nil {
+			s.writeUpstreamError(w, res.Err)
 		}
-		s.engine.RecordOutcome(final, float64(latency.Milliseconds()), success, em)
-		if cascLabel != "" {
-			s.metrics.RecordCascade()
-		}
-		s.metrics.RecordRoute(string(final.Tier), final.Passthrough, latency, !success, len(raw), 0)
-		if upErr != nil && status == 0 {
-			writeErr(w, http.StatusBadGateway, upErr.Error(), "upstream_error")
-		}
-		s.log.Printf("stream %s → %s tier=%s score=%.3f cascade=%q %s",
-			final.RequestedModel, final.UpstreamModel, final.Tier, final.Score, cascLabel, latency.Truncate(time.Millisecond))
-		return
-	}
-
-	status, body, ctype, final, cascLabel, upErr := s.proxyBuffered(ctx, raw, dec)
-	latency := time.Since(start)
-	success := upErr == nil && status > 0 && status < 400
-	em := ""
-	if upErr != nil {
-		em = upErr.Error()
-	} else if !success {
-		em = fmt.Sprintf("upstream status %d", status)
-	}
-	s.engine.RecordOutcome(final, float64(latency.Milliseconds()), success, em)
-
-	if upErr != nil {
-		s.metrics.RecordRoute(string(final.Tier), final.Passthrough, latency, true, len(raw), 0)
-		writeErr(w, http.StatusBadGateway, upErr.Error(), "upstream_error")
-		return
-	}
-
-	if cascLabel != "" {
-		s.metrics.RecordCascade()
-	}
-	s.metrics.RecordRoute(string(final.Tier), final.Passthrough, latency, !success, len(raw), len(body))
-
-	if s.cache != nil && fp != "" && success {
-		s.cache.Set(fp, cache.Entry{
-			Status: status, ContentType: ctype, Body: body,
-			Tier: string(final.Tier), Model: final.UpstreamModel,
-			Mode: string(final.Mode), Score: final.Score,
+	} else if ckey != "" {
+		var shared, ok bool
+		var ent cache.Entry
+		ent, ok, shared = s.cache.Do(ckey, func() (cache.Entry, bool) {
+			res = s.disp.Run(ctx, job)
+			ok := res.Err == nil && res.Final != nil && len(res.Quality) == 0
+			e := cache.Entry{Resp: res.Resp, At: time.Now(), CostUSD: res.CostUSD}
+			if res.Final != nil {
+				e.ModelID, e.Tier, e.Effort = res.Final.ModelID, string(res.Final.Tier), res.Final.Effort
+			}
+			return e, ok
 		})
+		switch {
+		case shared && ok:
+			s.m.cache.Inc("shared")
+			s.serveCached(w, req, dec, reqID, ent)
+			return
+		case shared:
+			// The leader failed; don't replay its failure, try independently.
+			res = s.disp.Run(ctx, job)
+		}
+		s.respond(w, req, dec, reqID, res)
+	} else {
+		res = s.disp.Run(ctx, job)
+		s.respond(w, req, dec, reqID, res)
 	}
-
-	s.setRouteHeaders(w, final, false, cascLabel)
-	if ctype != "" {
-		w.Header().Set("Content-Type", ctype)
-	}
-	if s.cache != nil && fp != "" {
-		w.Header().Set("X-Modelrouter-Cache", "MISS")
-	}
-	w.WriteHeader(status)
-	_, _ = w.Write(body)
-
-	s.log.Printf("routed %s → %s tier=%s score=%.3f status=%d cascade=%q %s",
-		final.RequestedModel, final.UpstreamModel, final.Tier, final.Score, status, cascLabel, latency.Truncate(time.Millisecond))
+	s.after(req, dec, reqID, res, start)
 }
 
-func (s *Server) proxyBuffered(ctx context.Context, raw []byte, dec router.Decision) (status int, body []byte, ctype string, final router.Decision, cascLabel string, err error) {
-	final = dec
-	attempt := func(d router.Decision) (int, []byte, string, error) {
-		forward, err := rewriteModel(raw, d.UpstreamModel)
-		if err != nil {
-			return 0, nil, "", err
-		}
-		up, err := s.upstream.ProxyChat(ctx, bytes.NewReader(forward), "application/json", false)
-		if err != nil {
-			return 0, nil, "", err
-		}
-		defer up.Body.Close()
-		b, readErr := io.ReadAll(up.Body)
-		ct := up.Header.Get("Content-Type")
-		if readErr != nil {
-			return up.StatusCode, b, ct, readErr
-		}
-		return up.StatusCode, b, ct, nil
+func (s *Server) respond(w http.ResponseWriter, req *canon.Request, dec *router.Decision, reqID string, res dispatch.Result) {
+	if res.Final == nil {
+		s.writeUpstreamError(w, res.Err)
+		return
 	}
-
-	status, body, ctype, err = attempt(dec)
-	if err == nil && !cascade.Retryable(status, nil) {
-		return status, body, ctype, final, "", nil
+	s.setHeaders(w.Header(), dec, res.Final, reqID, len(res.Attempts), "MISS")
+	w.Header().Set("X-Modelrouter-Cost", strconv.FormatFloat(res.CostUSD, 'f', 6, 64))
+	var extra map[string]any
+	if req.Router.Explain {
+		extra = map[string]any{"modelrouter": explain(dec, &res)}
 	}
-	if err != nil && !cascade.Retryable(0, err) {
-		return status, body, ctype, final, "", err
-	}
-
-	s.engine.RecordOutcome(dec, 0, false, errMsg(err, status))
-	next, ok := s.engine.Escalate(dec)
-	if !ok {
-		return status, body, ctype, final, "", err
-	}
-	cascLabel = cascade.Label(string(dec.Tier), string(next.Tier), dec.UpstreamModel, next.UpstreamModel)
-	st2, body2, ct2, err2 := attempt(next)
-	return st2, body2, ct2, next, cascLabel, err2
-}
-
-func (s *Server) proxyStream(ctx context.Context, w http.ResponseWriter, raw []byte, dec router.Decision) (final router.Decision, cascLabel string, status int, err error) {
-	final = dec
-	tryWrite := func(d router.Decision) (int, error) {
-		forward, err := rewriteModel(raw, d.UpstreamModel)
-		if err != nil {
-			return 0, err
-		}
-		up, err := s.upstream.ProxyChat(ctx, bytes.NewReader(forward), "application/json", true)
-		if err != nil {
-			return 0, err
-		}
-		defer up.Body.Close()
-		copyHopHeaders(w.Header(), up.Header)
-		s.setRouteHeaders(w, d, false, cascLabel)
-		w.WriteHeader(up.StatusCode)
-		_, copyErr := io.Copy(w, up.Body)
-		if flusher, ok := w.(http.Flusher); ok {
-			flusher.Flush()
-		}
-		return up.StatusCode, copyErr
-	}
-
-	status, err = tryWrite(dec)
-	if err == nil {
-		return final, "", status, nil
-	}
-	// Only cascade if we failed before writing (status==0). Once headers are sent, abort.
-	if status != 0 {
-		return final, "", status, err
-	}
-	s.engine.RecordOutcome(dec, 0, false, err.Error())
-	next, ok := s.engine.Escalate(dec)
-	if !ok {
-		return final, "", 0, err
-	}
-	cascLabel = cascade.Label(string(dec.Tier), string(next.Tier), dec.UpstreamModel, next.UpstreamModel)
-	status, err = tryWrite(next)
-	return next, cascLabel, status, err
-}
-
-func errMsg(err error, status int) string {
+	body, err := apiopenai.Encode("chatcmpl-"+reqID, res.Final.Model.UpstreamID, res.Resp, extra)
 	if err != nil {
-		return err.Error()
+		writeError(w, 500, err.Error(), "server_error")
+		return
 	}
-	return fmt.Sprintf("status %d", status)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
 }
 
-func copyHopHeaders(dst, src http.Header) {
-	for k, vv := range src {
-		switch strings.ToLower(k) {
-		case "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
-			"te", "trailers", "transfer-encoding", "upgrade", "content-length":
+func (s *Server) serveCached(w http.ResponseWriter, req *canon.Request, dec *router.Decision, reqID string, ent cache.Entry) {
+	m, ok := s.Router.Catalog.Lookup(ent.ModelID)
+	h := w.Header()
+	if s.cfg.ShowHeaders() {
+		h.Set("X-Modelrouter-Request-Id", reqID)
+		h.Set("X-Modelrouter-Model", ent.ModelID)
+		h.Set("X-Modelrouter-Tier", ent.Tier)
+		h.Set("X-Modelrouter-Mode", string(dec.Mode))
+		h.Set("X-Modelrouter-Cache", "HIT")
+		h.Set("X-Modelrouter-Cost", "0")
+	}
+	model := ent.ModelID
+	if ok {
+		model = m.UpstreamID
+	}
+	if req.Stream {
+		h.Set("Content-Type", "text/event-stream")
+		h.Set("Cache-Control", "no-cache")
+		w.WriteHeader(http.StatusOK)
+		sw := apiopenai.NewStreamWriter(w, "chatcmpl-"+reqID, model, req.StreamUsage)
+		for _, ev := range ent.Resp.Events() {
+			_ = sw.Event(ev)
+		}
+		_ = sw.Close()
+		return
+	}
+	body, _ := apiopenai.Encode("chatcmpl-"+reqID, model, ent.Resp, nil)
+	h.Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
+}
+
+type streamSink struct {
+	s     *Server
+	w     http.ResponseWriter
+	req   *canon.Request
+	dec   *router.Decision
+	reqID string
+	sw    *apiopenai.StreamWriter
+}
+
+func (k *streamSink) Commit(c *optimize.Candidate, attempts int) error {
+	h := k.w.Header()
+	k.s.setHeaders(h, k.dec, c, k.reqID, attempts, "MISS")
+	h.Set("Content-Type", "text/event-stream")
+	h.Set("Cache-Control", "no-cache")
+	h.Set("X-Accel-Buffering", "no")
+	k.w.WriteHeader(http.StatusOK)
+	k.sw = apiopenai.NewStreamWriter(k.w, "chatcmpl-"+k.reqID, c.Model.UpstreamID, k.req.StreamUsage)
+	return nil
+}
+
+func (k *streamSink) Event(ev canon.Event) error { return k.sw.Event(ev) }
+
+func (s *Server) setHeaders(h http.Header, dec *router.Decision, c *optimize.Candidate, reqID string, attempts int, cacheState string) {
+	h.Set("X-Modelrouter-Request-Id", reqID)
+	if !s.cfg.ShowHeaders() {
+		return
+	}
+	h.Set("X-Modelrouter-Model", c.ModelID)
+	h.Set("X-Modelrouter-Provider", c.Model.Provider)
+	h.Set("X-Modelrouter-Tier", string(c.Model.Tier))
+	if c.Effort != "" {
+		h.Set("X-Modelrouter-Effort", c.Effort)
+	}
+	h.Set("X-Modelrouter-Mode", string(dec.Mode))
+	h.Set("X-Modelrouter-Difficulty", fmt.Sprintf("%.3f", dec.Plan.Prediction.Difficulty))
+	h.Set("X-Modelrouter-P-Success", fmt.Sprintf("%.3f", c.P))
+	h.Set("X-Modelrouter-Est-Cost", strconv.FormatFloat(c.CostUSD, 'f', 6, 64))
+	h.Set("X-Modelrouter-Attempts", strconv.Itoa(attempts))
+	h.Set("X-Modelrouter-Routing-Us", strconv.FormatInt(dec.RoutingTime.Microseconds(), 10))
+	if s.cache != nil {
+		h.Set("X-Modelrouter-Cache", cacheState)
+	}
+}
+
+func (s *Server) writeUpstreamError(w http.ResponseWriter, e *provider.Error) {
+	if e == nil {
+		writeError(w, http.StatusBadGateway, "no upstream response", "upstream_error")
+		return
+	}
+	code, typ := http.StatusBadGateway, "upstream_error"
+	switch e.Kind {
+	case provider.KindBadRequest:
+		code, typ = http.StatusBadRequest, "invalid_request_error"
+	case provider.KindRateLimit:
+		code, typ = http.StatusTooManyRequests, "rate_limit_error"
+		if e.RetryAfter > 0 {
+			w.Header().Set("Retry-After", strconv.Itoa(int(e.RetryAfter.Seconds()+0.999)))
+		}
+	case provider.KindTimeout:
+		code = http.StatusGatewayTimeout
+	case provider.KindCanceled:
+		code, typ = 499, "client_closed_request"
+	case provider.KindNotFound:
+		code, typ = http.StatusNotFound, "model_not_found"
+	}
+	writeError(w, code, e.Error(), typ)
+}
+
+// after records metrics, learning, affinity, budget and the decision log.
+func (s *Server) after(req *canon.Request, dec *router.Decision, reqID string, res dispatch.Result, start time.Time) {
+	outcome := "ok"
+	if res.Err != nil {
+		outcome = res.Err.Kind.String()
+	}
+	for _, a := range res.Attempts {
+		s.m.attempts.Inc(a.ModelID, a.Outcome)
+		if a.CostUSD > 0 {
+			s.m.cost.Add(a.CostUSD, a.ModelID)
+		}
+		if a.TTFTms > 0 && a.Outcome != "hedge_lost" {
+			s.m.ttft.Observe(a.TTFTms/1000, a.Provider)
+		}
+	}
+	s.budget.Record(res.CostUSD)
+	s.m.latency.Observe(time.Since(start).Seconds(), string(dec.Mode))
+	if f := res.Final; f != nil {
+		u := res.Resp.Usage
+		s.m.requests.Inc(f.ModelID, f.Model.Provider, string(f.Model.Tier), string(dec.Mode), outcome)
+		s.m.tokens.Add(float64(u.InputTokens), f.ModelID, "input")
+		s.m.tokens.Add(float64(u.OutputTokens), f.ModelID, "output")
+		s.m.tokens.Add(float64(u.CachedTokens), f.ModelID, "cached")
+		s.m.tokens.Add(float64(u.ReasoningTokens), f.ModelID, "reasoning")
+		if res.Err == nil {
+			s.Router.Commit(dec, f, u.InputTokens)
+		}
+		if s.learner != nil && res.Err == nil {
+			s.learner.Remember(&learn.Decision{ID: reqID, Vec: dec.Vec, Lex: dec.Lex, Axes: dec.Plan.Prediction.Axes,
+				Difficulty: dec.Plan.Prediction.Difficulty, ModelID: f.ModelID, Effort: f.Effort,
+				OutTokens: max(u.OutputTokens-u.ReasoningTokens, 1), At: time.Now()}, dec.Full, dec.Prev)
+		}
+	} else {
+		s.m.requests.Inc("", "", "", string(dec.Mode), outcome)
+	}
+	if s.learner != nil {
+		// Failed outputs from earlier attempts are implicit negatives for those models.
+		for model, sig := range res.Quality {
+			if res.Final != nil && model == res.Final.ModelID && res.Err == nil && len(res.Attempts) == 1 {
+				continue
+			}
+			id := reqID + ":" + model
+			c := findCandidate(dec.Plan, model)
+			if c == nil {
+				continue
+			}
+			s.learner.Remember(&learn.Decision{ID: id, Vec: dec.Vec, Lex: dec.Lex, Axes: dec.Plan.Prediction.Axes,
+				Difficulty: dec.Plan.Prediction.Difficulty, ModelID: model, Effort: c.Effort, OutTokens: c.OutTokens, At: time.Now()}, "", "")
+			s.learner.Implicit(id, sig)
+		}
+	}
+	s.dlog.Log(decisionRecord(req, dec, reqID, &res, time.Since(start)))
+}
+
+func findCandidate(p *optimize.Plan, model string) *optimize.Candidate {
+	for _, c := range append([]*optimize.Candidate{p.Chosen}, p.Fallbacks...) {
+		if c != nil && c.ModelID == model {
+			return c
+		}
+	}
+	return nil
+}
+
+func explain(dec *router.Decision, res *dispatch.Result) map[string]any {
+	out := map[string]any{"plan": dec.Plan, "routing_us": dec.RoutingTime.Microseconds(), "session": dec.SessionKey != ""}
+	if res != nil {
+		out["attempts"] = res.Attempts
+		out["cost_usd"] = res.CostUSD
+	}
+	return out
+}
+
+func decisionRecord(req *canon.Request, dec *router.Decision, id string, res *dispatch.Result, dur time.Duration) map[string]any {
+	rec := map[string]any{
+		"ts": time.Now().UTC().Format(time.RFC3339Nano), "id": id, "requested": req.Model, "mode": dec.Mode,
+		"difficulty": dec.Plan.Prediction.Difficulty, "uncertainty": dec.Plan.Prediction.Uncertainty,
+		"axes": dec.Plan.Prediction.Axes.Map(), "features": dec.Plan.Features,
+		"chosen": dec.Plan.Chosen, "fallbacks": dec.Plan.Fallbacks, "lambda": dec.Plan.Lambda,
+		"attempts": res.Attempts, "cost_usd": res.CostUSD, "duration_ms": dur.Milliseconds(),
+		"routing_us": dec.RoutingTime.Microseconds(), "stream": req.Stream,
+	}
+	if res.Final != nil {
+		rec["final"] = res.Final.ModelID
+		rec["usage"] = res.Resp.Usage
+		rec["finish"] = res.Resp.FinishReason
+	}
+	if res.Err != nil {
+		rec["error"] = res.Err.Error()
+	}
+	return rec
+}
+
+func (s *Server) handleRoute(w http.ResponseWriter, r *http.Request) {
+	var buf bytes.Buffer
+	if _, err := buf.ReadFrom(http.MaxBytesReader(w, r.Body, apiopenai.MaxBodyBytes)); err != nil {
+		writeError(w, 400, err.Error(), "invalid_request_error")
+		return
+	}
+	body := buf.Bytes()
+	var short struct {
+		Prompt string `json:"prompt"`
+		Model  string `json:"model"`
+		Mode   string `json:"mode"`
+	}
+	if json.Unmarshal(body, &short) == nil && short.Prompt != "" {
+		b, _ := json.Marshal(map[string]any{"model": short.Model, "messages": []map[string]string{{"role": "user", "content": short.Prompt}}, "router": map[string]any{"mode": short.Mode}})
+		body = b
+	}
+	req, err := apiopenai.Decode(bytes.NewReader(body))
+	if err != nil {
+		writeError(w, 400, err.Error(), "invalid_request_error")
+		return
+	}
+	applyHeaders(r, req)
+	dec, err := s.Router.Route(req)
+	if err != nil {
+		writeError(w, 400, err.Error(), "routing_error")
+		return
+	}
+	writeJSON(w, 200, explain(dec, nil))
+}
+
+func (s *Server) handleFeedback(w http.ResponseWriter, r *http.Request) {
+	if s.learner == nil {
+		writeError(w, 409, "learning is disabled", "invalid_request_error")
+		return
+	}
+	var fb struct {
+		RequestID string   `json:"request_id"`
+		Score     *float64 `json:"score"`
+		Rating    string   `json:"rating"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&fb); err != nil {
+		writeError(w, 400, "invalid JSON", "invalid_request_error")
+		return
+	}
+	score := -1.0
+	if fb.Score != nil {
+		score = *fb.Score
+	}
+	switch strings.ToLower(fb.Rating) {
+	case "good", "up", "positive", "thumbs_up":
+		score = 1
+	case "bad", "down", "negative", "thumbs_down":
+		score = 0
+	}
+	if score < 0 {
+		writeError(w, 400, "provide score in [0,1] or rating good|bad", "invalid_request_error")
+		return
+	}
+	if err := s.learner.Feedback(strings.TrimPrefix(fb.RequestID, "chatcmpl-"), score); err != nil {
+		code := 400
+		if errors.Is(err, learn.ErrUnknownRequest) {
+			code = 404
+		}
+		writeError(w, code, err.Error(), "invalid_request_error")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"status": "recorded"})
+}
+
+func (s *Server) handleModels(w http.ResponseWriter, _ *http.Request) {
+	created := s.started.Unix()
+	var data []map[string]any
+	for _, v := range router.VirtualModels {
+		data = append(data, map[string]any{"id": v.ID, "object": "model", "created": created, "owned_by": "modelrouter", "description": v.Description})
+	}
+	for _, m := range s.Router.Catalog.All() {
+		if _, ok := s.providers[m.Provider]; !ok {
 			continue
 		}
-		for _, v := range vv {
-			dst.Add(k, v)
+		data = append(data, map[string]any{"id": m.ID, "object": "model", "created": created, "owned_by": m.Provider,
+			"tier": m.Tier, "auto_routed": m.Enabled, "context_window": m.Context, "max_output": m.MaxOutput})
+	}
+	writeJSON(w, 200, map[string]any{"object": "list", "data": data})
+}
+
+func (s *Server) handleReady(w http.ResponseWriter, _ *http.Request) {
+	ready := 0
+	for _, m := range s.Router.Catalog.All() {
+		if _, ok := s.providers[m.Provider]; ok && m.Enabled {
+			ready++
 		}
 	}
+	status := 200
+	if ready == 0 {
+		status = 503
+	}
+	writeJSON(w, status, map[string]any{"ready": ready > 0, "routable_models": ready, "providers": s.Providers(), "embedder": s.embedder.Name()})
 }
 
-func (s *Server) setRouteHeaders(w http.ResponseWriter, dec router.Decision, cacheHit bool, cascLabel string) {
-	if !s.cfg.Router.ShowRouted {
-		return
-	}
-	w.Header().Set("X-Modelrouter-Tier", string(dec.Tier))
-	w.Header().Set("X-Modelrouter-Model", dec.UpstreamModel)
-	w.Header().Set("X-Modelrouter-Mode", string(dec.Mode))
-	w.Header().Set("X-Modelrouter-Score", fmt.Sprintf("%.3f", dec.Score))
-	w.Header().Set("X-Modelrouter-Circuit", string(dec.CircuitState))
-	if cascLabel != "" {
-		w.Header().Set("X-Modelrouter-Cascade", cascLabel)
-	}
-	if cacheHit {
-		w.Header().Set("X-Modelrouter-Cache", "HIT")
-	}
-}
-
-func (s *Server) decide(r *http.Request) (router.Decision, []byte, error) {
-	dec, raw, _, err := s.decideFull(r)
-	return dec, raw, err
-}
-
-func (s *Server) decideFull(r *http.Request) (router.Decision, []byte, ChatRequest, error) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, 32<<20))
-	if err != nil {
-		return router.Decision{}, nil, ChatRequest{}, fmt.Errorf("read body: %w", err)
-	}
-	var chat ChatRequest
-	if err := json.Unmarshal(body, &chat); err != nil {
-		return router.Decision{}, nil, ChatRequest{}, fmt.Errorf("invalid json: %w", err)
-	}
-	if chat.Model == "" {
-		chat.Model = "auto"
-	}
-
-	mode := config.Mode(strings.ToLower(strings.TrimSpace(chat.OptimizeFor)))
-	if mode == "" {
-		mode = config.Mode(strings.ToLower(r.Header.Get("X-Optimize-For")))
-	}
-	switch mode {
-	case config.ModeCost, config.ModeBalance, config.ModeIntelligence, "":
-	default:
-		return router.Decision{}, nil, ChatRequest{}, fmt.Errorf("unknown optimize_for %q", mode)
-	}
-
-	msgs := make([]classifier.Message, 0, len(chat.Messages))
-	images := false
-	for _, m := range chat.Messages {
-		msgs = append(msgs, classifier.Message{
-			Role:    m.Role,
-			Content: contentText(m.Content),
-		})
-		if hasImage(m.Content) {
-			images = true
+func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.Telemetry.MetricsAuth {
+		ok := false
+		s.admin(func(http.ResponseWriter, *http.Request) { ok = true })(w, r)
+		if !ok {
+			return
 		}
 	}
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+	s.reg.WritePrometheus(w)
+}
 
-	dec := s.engine.Route(router.RouteInput{
-		Model: chat.Model,
-		Mode:  mode,
-		Req: classifier.Request{
-			Messages:      msgs,
-			Tools:         toolCount(chat.Tools),
-			HasImages:     images,
-			StructuredOut: isStructured(chat.ResponseFormat),
-			StreamHint:    chat.Stream,
-		},
+func (s *Server) handleState(w http.ResponseWriter, _ *http.Request) {
+	out := map[string]any{
+		"version": Version, "uptime_s": int(time.Since(s.started).Seconds()), "providers": s.Providers(),
+		"health": s.health.SnapshotAll(), "budget": s.budget.Snapshot(), "catalog_snapshot": catalog.Snapshot,
+	}
+	if s.learner != nil {
+		out["learning"] = s.learner.Stats()
+	}
+	if s.cache != nil {
+		h, m, n, b := s.cache.Stats()
+		out["cache"] = map[string]any{"hits": h, "misses": m, "items": n, "bytes": b}
+	}
+	writeJSON(w, 200, out)
+}
+
+func (s *Server) handleRoot(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, 200, map[string]any{
+		"name": "modelrouter", "version": Version,
+		"endpoints": []string{"POST /v1/chat/completions", "POST /v1/route", "POST /v1/feedback", "GET /v1/models", "GET /healthz", "GET /readyz", "GET /metrics", "GET /admin/state"},
 	})
-	return dec, body, chat, nil
-}
-
-func rewriteModel(raw []byte, model string) ([]byte, error) {
-	var obj map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &obj); err != nil {
-		return nil, err
-	}
-	b, err := json.Marshal(model)
-	if err != nil {
-		return nil, err
-	}
-	obj["model"] = b
-	delete(obj, "optimize_for")
-	return json.Marshal(obj)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	enc := json.NewEncoder(w)
 	enc.SetEscapeHTML(false)
 	_ = enc.Encode(v)
 }
 
-func writeErr(w http.ResponseWriter, status int, msg, typ string) {
-	writeJSON(w, status, ErrorBody{Error: ErrorDetail{Message: msg, Type: typ}})
+func writeError(w http.ResponseWriter, status int, msg, typ string) {
+	writeJSON(w, status, map[string]any{"error": map[string]any{"message": msg, "type": typ}})
 }
+
+// ProviderByName returns a configured provider adapter.
+func (s *Server) ProviderByName(name string) provider.Provider { return s.providers[name] }

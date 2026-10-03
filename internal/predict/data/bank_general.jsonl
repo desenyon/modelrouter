@@ -1,0 +1,112 @@
+{"t":"hi","d":0.02,"a":{"knowledge":1},"o":20}
+{"t":"hello! how are you today?","d":0.03,"a":{"creative":0.5,"knowledge":0.5},"o":40}
+{"t":"thanks, that worked","d":0.02,"a":{"knowledge":1},"o":20}
+{"t":"good morning","d":0.02,"a":{"creative":1},"o":20}
+{"t":"ok cool, thanks for the help","d":0.02,"a":{"knowledge":1},"o":20}
+{"t":"What is the capital of France?","d":0.04,"a":{"knowledge":1},"o":15}
+{"t":"How many days are in a leap year?","d":0.04,"a":{"knowledge":1},"o":15}
+{"t":"Who wrote Pride and Prejudice?","d":0.04,"a":{"knowledge":1},"o":15}
+{"t":"What year did the Berlin Wall fall?","d":0.04,"a":{"knowledge":1},"o":20}
+{"t":"Define photosynthesis in one sentence.","d":0.06,"a":{"knowledge":1},"o":40}
+{"t":"What's the difference between affect and effect?","d":0.1,"a":{"knowledge":0.8,"creative":0.2},"o":120}
+{"t":"What time zone is Tokyo in?","d":0.04,"a":{"knowledge":1},"o":15}
+{"t":"Give me a synonym for happy","d":0.04,"a":{"creative":0.6,"knowledge":0.4},"o":15}
+{"t":"Translate 'good night' into Spanish","d":0.05,"a":{"knowledge":0.7,"creative":0.3},"o":10}
+{"t":"Translate this paragraph into French: The meeting has moved to Thursday afternoon. Please bring the quarterly figures.","d":0.12,"a":{"knowledge":0.6,"creative":0.4},"o":60}
+{"t":"Fix the grammar: 'me and him goes to the store yesterday'","d":0.06,"a":{"instruction":0.5,"creative":0.5},"o":20}
+{"t":"Rewrite this sentence to sound more professional: hey can u send me the report asap","d":0.08,"a":{"creative":0.7,"instruction":0.3},"o":30}
+{"t":"Summarize this email in one sentence: the deployment window moved from Friday to Monday, merge PRs by Thursday.","d":0.08,"a":{"instruction":0.6,"knowledge":0.4},"o":40}
+{"t":"tl;dr this article in three bullet points","d":0.14,"a":{"instruction":0.6,"knowledge":0.4},"o":120}
+{"t":"Make this text shorter without losing meaning","d":0.12,"a":{"creative":0.6,"instruction":0.4},"o":150}
+{"t":"Format this list as a markdown table with columns name, age, city","d":0.08,"a":{"instruction":1},"o":150}
+{"t":"Extract all email addresses from the following text and return them as a JSON array","d":0.1,"a":{"instruction":0.7,"coding":0.3},"o":80}
+{"t":"Classify the sentiment of this review as positive, negative, or neutral: 'The food was cold and slow.'","d":0.06,"a":{"instruction":0.6,"knowledge":0.4},"o":5}
+{"t":"Extract the invoice number, date, total and vendor from this invoice text into JSON","d":0.14,"a":{"instruction":0.8,"knowledge":0.2},"o":80}
+{"t":"Tag each of these support tickets with one of: billing, bug, feature request, account","d":0.15,"a":{"instruction":0.8,"knowledge":0.2},"o":200}
+{"t":"Respond only with JSON matching {\"name\": string, \"age\": integer}. Extract from: John is 34.","d":0.06,"a":{"instruction":1},"o":20}
+{"t":"Write a haiku about autumn leaves","d":0.1,"a":{"creative":1},"o":30}
+{"t":"Write a short limerick about a cat who loves coffee","d":0.12,"a":{"creative":1},"o":60}
+{"t":"Give me 10 name ideas for a coffee shop","d":0.1,"a":{"creative":1},"o":100}
+{"t":"Write a friendly reminder email to a client about an overdue invoice","d":0.12,"a":{"creative":0.7,"instruction":0.3},"o":180}
+{"t":"Write a birthday message for my coworker","d":0.07,"a":{"creative":1},"o":60}
+{"t":"Write a product description for a stainless steel water bottle, about 100 words","d":0.15,"a":{"creative":0.8,"instruction":0.2},"o":140}
+{"t":"Write a tweet announcing our new dark mode feature","d":0.08,"a":{"creative":1},"o":50}
+{"t":"Write a cover letter for a junior data analyst role highlighting SQL and Excel","d":0.22,"a":{"creative":0.7,"instruction":0.3},"o":450}
+{"t":"Write a 1500-word short story about a lighthouse keeper who finds a message in a bottle, with a twist ending","d":0.38,"a":{"creative":1},"o":2000}
+{"t":"Write a poem in the style of Emily Dickinson about the ocean","d":0.3,"a":{"creative":1},"o":150}
+{"t":"Draft a wedding toast for my brother, funny but heartfelt, three minutes long","d":0.3,"a":{"creative":1},"o":550}
+{"t":"Write the opening chapter of a literary novel told from three alternating perspectives, each with a distinct voice, slowly revealing a shared secret","d":0.55,"a":{"creative":0.85,"instruction":0.15},"o":3500}
+{"t":"Write a screenplay scene where two estranged sisters reconcile at a family reunion; let subtext carry the emotion","d":0.48,"a":{"creative":1},"o":1500}
+{"t":"Write a sonnet in strict iambic pentameter, ABAB CDCD EFEF GG, about time, where the first letters of the lines spell a hidden phrase","d":0.66,"a":{"creative":0.6,"instruction":0.4},"o":250}
+{"t":"Write the full pilot script for a TV drama: cold open, four acts, and a cliffhanger","d":0.62,"a":{"creative":0.9,"instruction":0.1},"o":12000}
+{"t":"Edit my essay for clarity and flow but keep my voice","d":0.24,"a":{"creative":0.6,"instruction":0.4},"o":1000}
+{"t":"Give developmental editing feedback on my 90,000-word novel manuscript: structure, pacing, character arcs","d":0.66,"a":{"creative":0.5,"long_context":0.4,"reasoning":0.1},"o":3000}
+{"t":"Write a persuasive essay arguing for a four-day work week, 800 words, addressing counterarguments","d":0.3,"a":{"creative":0.6,"reasoning":0.4},"o":1100}
+{"t":"Write a press release announcing our Series B funding","d":0.2,"a":{"creative":0.8,"instruction":0.2},"o":600}
+{"t":"Draft a LinkedIn post about our company reaching one million users","d":0.1,"a":{"creative":1},"o":200}
+{"t":"Write a cheerful out-of-office auto reply","d":0.05,"a":{"creative":1},"o":60}
+{"t":"Explain what an API is to a 10 year old","d":0.1,"a":{"knowledge":0.7,"creative":0.3},"o":200}
+{"t":"Explain how a car engine works","d":0.16,"a":{"knowledge":1},"o":450}
+{"t":"Why is the sky blue?","d":0.1,"a":{"knowledge":1},"o":200}
+{"t":"What are the main causes of inflation?","d":0.2,"a":{"knowledge":0.8,"reasoning":0.2},"o":400}
+{"t":"Explain the theory of relativity in simple terms","d":0.22,"a":{"knowledge":0.9,"reasoning":0.1},"o":450}
+{"t":"How does a vaccine train the immune system?","d":0.22,"a":{"knowledge":1},"o":450}
+{"t":"Explain the CAP theorem with examples of real databases","d":0.32,"a":{"knowledge":0.6,"coding":0.2,"reasoning":0.2},"o":600}
+{"t":"How do transformers work in machine learning? Explain attention.","d":0.34,"a":{"knowledge":0.7,"math":0.15,"reasoning":0.15},"o":800}
+{"t":"Compare Keynesian and Austrian economics and how each would respond to stagflation","d":0.45,"a":{"knowledge":0.6,"reasoning":0.4},"o":900}
+{"t":"Summarize the key holdings of Marbury v. Madison","d":0.2,"a":{"knowledge":1},"o":350}
+{"t":"Under GDPR, what mechanisms allow transferring EU customer data to US servers today?","d":0.5,"a":{"knowledge":0.7,"reasoning":0.3},"o":700}
+{"t":"Analyze whether this non-compete clause is enforceable in California, Texas and New York, citing statutes and leading cases, and suggest redlines","d":0.72,"a":{"knowledge":0.6,"reasoning":0.3,"instruction":0.1},"o":1400}
+{"t":"Explain quantum entanglement","d":0.24,"a":{"knowledge":0.8,"math":0.2},"o":500}
+{"t":"Derive the energy levels of the hydrogen atom from the Schrödinger equation","d":0.62,"a":{"math":0.6,"knowledge":0.4},"o":1500}
+{"t":"Compare the Copenhagen, many-worlds and pilot-wave interpretations rigorously","d":0.58,"a":{"knowledge":0.6,"reasoning":0.4},"o":1500}
+{"t":"Calculate the escape velocity from Mars","d":0.12,"a":{"math":0.6,"knowledge":0.4},"o":150}
+{"t":"Balance this chemical equation: Fe + O2 → Fe2O3","d":0.08,"a":{"knowledge":0.5,"math":0.5},"o":60}
+{"t":"Design an experiment to test whether a gene regulates leaf growth in Arabidopsis, with controls and readouts","d":0.6,"a":{"knowledge":0.6,"reasoning":0.4},"o":1500}
+{"t":"Explain the causes of World War I","d":0.18,"a":{"knowledge":1},"o":600}
+{"t":"Compare the fall of the Roman Republic with modern democratic backsliding; which analogies hold?","d":0.56,"a":{"knowledge":0.5,"reasoning":0.5},"o":1500}
+{"t":"Explain Kant's categorical imperative and Hegel's critique of it","d":0.46,"a":{"knowledge":0.6,"reasoning":0.4},"o":1000}
+{"t":"Construct the strongest argument against your own position on moral realism, then rebut it","d":0.62,"a":{"reasoning":0.8,"knowledge":0.2},"o":1500}
+{"t":"Synthesize the research literature on sleep and memory consolidation, weighing conflicting evidence and open questions","d":0.72,"a":{"knowledge":0.6,"reasoning":0.4},"o":2500}
+{"t":"Propose a novel research direction for reducing hallucinations in language models with an experimental design, baselines and metrics","d":0.78,"a":{"reasoning":0.6,"knowledge":0.4},"o":2000}
+{"t":"Critique the methodology of this randomized controlled trial: threats to validity, statistical issues, and whether conclusions follow","d":0.62,"a":{"reasoning":0.6,"knowledge":0.4},"o":1200}
+{"t":"Explain how to make a sourdough starter","d":0.12,"a":{"knowledge":1},"o":400}
+{"t":"What's a good beginner workout routine?","d":0.1,"a":{"knowledge":1},"o":400}
+{"t":"Recommend some sci-fi books similar to Dune","d":0.1,"a":{"knowledge":0.7,"creative":0.3},"o":250}
+{"t":"How do I get red wine out of a carpet?","d":0.05,"a":{"knowledge":1},"o":150}
+{"t":"What should I name my golden retriever puppy?","d":0.05,"a":{"creative":1},"o":80}
+{"t":"Can you tell me a joke?","d":0.04,"a":{"creative":1},"o":40}
+{"t":"What's the best way to learn piano as an adult?","d":0.12,"a":{"knowledge":0.8,"reasoning":0.2},"o":400}
+{"t":"Explain the plot of Inception","d":0.1,"a":{"knowledge":1},"o":350}
+{"t":"Roleplay as a medieval innkeeper and greet me","d":0.08,"a":{"creative":1},"o":120}
+{"t":"Continue the story from where we left off","d":0.2,"a":{"creative":1},"o":600}
+{"t":"Can you make it funnier?","d":0.12,"a":{"creative":1},"o":300}
+{"t":"Explain that last part again more simply","d":0.1,"a":{"knowledge":0.8,"creative":0.2},"o":250}
+{"t":"Shorter please","d":0.04,"a":{"instruction":1},"o":100}
+{"t":"Use a table instead","d":0.05,"a":{"instruction":1},"o":250}
+{"t":"Help me plan a 5-day trip to Japan on a budget","d":0.18,"a":{"knowledge":0.6,"reasoning":0.2,"creative":0.2},"o":800}
+{"t":"Create a weekly vegetarian meal plan with 120g of protein per day","d":0.22,"a":{"knowledge":0.6,"instruction":0.4},"o":900}
+{"t":"Make me a packing list for a weekend camping trip","d":0.07,"a":{"knowledge":0.8,"instruction":0.2},"o":250}
+{"t":"What's a good gift for my dad who likes fishing?","d":0.06,"a":{"creative":0.6,"knowledge":0.4},"o":200}
+{"t":"Help me write a nice reply to my friend who invited me to dinner","d":0.05,"a":{"creative":1},"o":60}
+{"t":"I'm feeling stressed about exams, any tips?","d":0.1,"a":{"knowledge":0.6,"creative":0.4},"o":350}
+{"t":"Should I use PostgreSQL or MongoDB for a new e-commerce app?","d":0.24,"a":{"reasoning":0.5,"knowledge":0.3,"coding":0.2},"o":500}
+{"t":"Give me pros and cons of remote work","d":0.12,"a":{"reasoning":0.4,"knowledge":0.6},"o":350}
+{"t":"Write a business plan for a subscription coffee startup with market sizing, unit economics and go-to-market","d":0.46,"a":{"reasoning":0.4,"knowledge":0.3,"creative":0.3},"o":2000}
+{"t":"Our SaaS churn rose from 3% to 7% monthly. Here is cohort data and ticket themes. Diagnose causes and propose a prioritized retention plan.","d":0.6,"a":{"reasoning":0.6,"knowledge":0.2,"long_context":0.2},"o":1500}
+{"t":"Evaluate second-order effects of a 25% tariff on imported semiconductors on consumer prices, domestic investment and trade relations over five years","d":0.66,"a":{"reasoning":0.6,"knowledge":0.4},"o":1500}
+{"t":"Build a discounted cash flow model from these financials, justify WACC and terminal growth, and run sensitivity analysis","d":0.62,"a":{"math":0.3,"reasoning":0.4,"knowledge":0.3},"o":1800}
+{"t":"Is it ethical for self-driving cars to prioritize passengers over pedestrians? Give a nuanced answer.","d":0.36,"a":{"reasoning":0.7,"knowledge":0.3},"o":700}
+{"t":"Write an Excel formula to sum column B where column A equals 'Paid'","d":0.07,"a":{"coding":0.7,"knowledge":0.3},"o":40}
+{"t":"Create a Google Sheets formula that looks up a price from another sheet and handles missing values","d":0.12,"a":{"coding":0.7,"knowledge":0.3},"o":80}
+{"t":"Given these 50 transactions, categorize each and give a monthly spending summary","d":0.2,"a":{"instruction":0.6,"math":0.2,"long_context":0.2},"o":800}
+{"t":"¿Cuál es la capital de Argentina?","d":0.04,"a":{"knowledge":1},"o":15}
+{"t":"Explique la différence entre l'imparfait et le passé composé avec des exemples","d":0.16,"a":{"knowledge":0.7,"creative":0.3},"o":400}
+{"t":"Schreibe eine kurze E-Mail an meinen Vermieter wegen einer kaputten Heizung","d":0.1,"a":{"creative":0.8,"instruction":0.2},"o":150}
+{"t":"请用简单的话解释什么是区块链","d":0.14,"a":{"knowledge":1},"o":300}
+{"t":"日本語で自己紹介の例文を書いてください","d":0.08,"a":{"creative":1},"o":150}
+{"t":"Напиши функцию на Python для сортировки списка словарей по ключу","d":0.1,"a":{"coding":1},"o":120}
+{"t":"Translate this technical whitepaper section on zero-knowledge proofs into Japanese, preserving terminology and notation","d":0.42,"a":{"knowledge":0.5,"creative":0.3,"math":0.2},"o":1500}
+{"t":"Follow these rules exactly: answer in exactly 3 sentences, do not use the letter 'e', end with a question","d":0.5,"a":{"instruction":0.8,"creative":0.2},"o":80}
+{"t":"Write a product FAQ with exactly 7 questions, each answer under 40 words, no exclamation marks, and the phrase 'zero setup' exactly twice","d":0.38,"a":{"instruction":0.7,"creative":0.3},"o":500}
+{"t":"Generate a lesson plan following this 12-point rubric with differentiated activities for three reading levels and a formative assessment","d":0.45,"a":{"instruction":0.6,"knowledge":0.2,"creative":0.2},"o":1500}

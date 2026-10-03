@@ -1,46 +1,88 @@
-# modelrouter gateway configuration
-#
-# Luna handles the majority of traffic. Terra covers mid-complexity work.
-# Sol is reserved for tasks that actually need frontier intelligence.
+# modelrouter configuration. Every field is optional; values shown are defaults
+# unless marked "example". ${VARS} are expanded from the environment.
 
 listen: ":8787"
-# api_key: "sk-your-gateway-key"   # optional; protects the gateway itself
 
-upstream:
-  base_url: "https://openrouter.ai/api/v1"
-  # api_key loaded from MODELROUTER_UPSTREAM_API_KEY / OPENROUTER_API_KEY / OPENAI_API_KEY
-  timeout: 120s
+# Client keys for the gateway itself (Bearer / X-API-Key). Empty = open.
+api_keys: []
+# admin_key: "${MODELROUTER_ADMIN_KEY}"   # protects /admin/state (and /metrics with metrics_auth)
+
+# Native providers. A provider without a key is simply never routed to.
+# Keys are also read from OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY.
+providers:
+  openai:
+    api_key: "${OPENAI_API_KEY}"
+    # base_url: https://api.openai.com/v1        # Responses API endpoint root
+    # organization: org-...
+  anthropic:
+    api_key: "${ANTHROPIC_API_KEY}"
+    # base_url: https://api.anthropic.com
+    server_fallbacks: true     # Anthropic's server-side refusal fallback on Fable 5.1 / Opus 5.5 / Sonnet 5.5
+  gemini:
+    api_key: "${GEMINI_API_KEY}"
+    # base_url: https://generativelanguage.googleapis.com
+  # Any OpenAI Chat Completions–compatible endpoint (example):
+  # extra:
+  #   - name: openrouter
+  #     base_url: https://openrouter.ai/api/v1
+  #     api_key_env: OPENROUTER_API_KEY
+
+# Patch built-in models or add new ones (run `modelrouter models` for the catalog).
+models:
+  # - id: anthropic/claude-haiku-4-5
+  #   enabled: false                  # never auto-route here (explicit requests still work)
+  # - id: openrouter/deepseek/deepseek-v4   # example: a new model on an extra provider
+  #   provider: openrouter
+  #   upstream_id: deepseek/deepseek-v4
+  #   tier: terra
+  #   context: 128000
+  #   max_output: 16384
+  #   price: {input: 0.5, output: 2.0}
+  #   ability: {reasoning: 0.8, coding: 0.82, math: 0.84}
 
 router:
-  default_mode: balance          # cost | balance | intelligence
-  luna_max_score: 0.42           # score ≤ this → Luna
-  terra_max_score: 0.72          # score ≤ this → Terra; above → Sol
-  show_routed: true              # emit X-Modelrouter-* response headers
-  adaptive: true                 # nudge thresholds from recent Sol share (±0.05)
-  sol_share_target: 0.15         # soft target for adaptive controller
+  default_mode: balance          # cost | balance | quality | fast
+  # Utility = value_usd·P(success) − λ·cost − latency_usd_per_s·seconds, subject to P ≥ quality_floor.
+  # risk inflates predicted difficulty by risk·uncertainty (guards against under-routing).
+  objectives:
+    cost:    {value_usd: 0.01, quality_floor: 0.65, latency_usd_per_s: 0.0001, risk: 0}
+    balance: {value_usd: 0.06, quality_floor: 0.80, latency_usd_per_s: 0.0005, risk: 0.25}
+    quality: {value_usd: 0.60, quality_floor: 0.90, latency_usd_per_s: 0.0002, risk: 0.5}
+    fast:    {value_usd: 0.05, quality_floor: 0.72, latency_usd_per_s: 0.02,   risk: 0.1}
+  explore_rate: 0                # 0–0.2: share of requests sent to the runner-up model to learn faster
+  switch_penalty_usd: 0.0005     # cost of switching models mid-conversation (×4 inside tool loops)
+  show_headers: true             # X-Modelrouter-* response headers
 
-policy:
-  force_luna_easy: true          # easy+short+no-tools → force Luna, no Sol cascade
-  min_terra_tools: 3             # tools ≥ N → min Terra
-  suppress_sol_below: 0.42       # absolute Sol suppress ceiling
-  min_sol_hard_markers: 3
-  min_sol_tokens: 1500
+budget:
+  usd_per_hour: 0                # >0 enables the spend controller (raises λ when overspending)
+
+dispatch:
+  max_attempts: 3                # primary + failovers per request
+  retry_ratio: 0.2               # retries/hedges allowed per primary request (token bucket)
+  connect_timeout: 10s
+  first_token_timeout: 30s       # base; ×1–8 by reasoning effort, + prefill time for long prompts
+  idle_timeout: 120s             # max silence between upstream events
+  total_timeout: 20m
+  hedge: false                   # race a second provider when the first is slow to start
+  hedge_min_delay: 2s
+  quality_retry: true            # retry non-streaming outputs that are empty, refused, or invalid JSON
 
 cache:
-  enabled: true
-  capacity: 2048                 # LRU fingerprint cache (non-stream only)
+  enabled: true                  # exact-match; only temperature=0 / seeded / forced requests
+  max_bytes: 67108864
+  ttl: 10m
 
-cascade:
-  enabled: true                  # one-shot escalate on 429/5xx/timeout
+embedder:
+  # dir: ~/Library/Caches/modelrouter/potion-base-8M   # default: OS user cache dir
+  auto_download: true            # fetch the pinned model (~30 MB, sha256-verified) on first start
 
-models:
-  # string form still works: luna: "openai/gpt-5.6-luna"
-  luna:
-    primary: "openai/gpt-5.6-luna"
-    fallbacks: []
-  terra:
-    primary: "openai/gpt-5.6-terra"
-    fallbacks: []
-  sol:
-    primary: "openai/gpt-5.6-sol"
-    fallbacks: []
+learning:
+  disabled: false
+  # state_path: ~/.config/modelrouter/learned.json
+  learning_rate: 0.004
+  flush_interval: 30s
+
+telemetry:
+  # decision_log: /var/log/modelrouter/decisions.jsonl   # one JSON record per routed request
+  sample: 1.0
+  metrics_auth: false

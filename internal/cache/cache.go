@@ -1,108 +1,138 @@
-// Package cache provides an LRU fingerprint cache for identical non-stream chats.
+// Package cache is an exact-match response cache with byte-bounded LRU
+// eviction, TTL, and singleflight de-duplication of identical in-flight
+// requests. Keys cover every generation-affecting parameter, and only
+// deterministic requests (temperature 0 or a fixed seed) or explicit opt-ins
+// are cached.
 package cache
 
 import (
-	"container/list"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"sync"
 	"sync/atomic"
+	"time"
+
+	"github.com/desenyon/modelrouter/internal/canon"
+	"github.com/desenyon/modelrouter/internal/lru"
 )
 
-// Entry is a cached upstream HTTP response body + status + content-type.
+// Entry is a cached completion plus the routing outcome that produced it.
 type Entry struct {
-	Status      int
-	ContentType string
-	Body        []byte
-	Tier        string
-	Model       string
-	Mode        string
-	Score       float64
+	Resp    canon.Response
+	ModelID string
+	Tier    string
+	Effort  string
+	CostUSD float64
+	At      time.Time
 }
 
-// Store is a bounded LRU of fingerprint → Entry.
+// Store is safe for concurrent use.
 type Store struct {
-	mu       sync.Mutex
-	capacity int
-	ll       *list.List
-	items    map[string]*list.Element
-	hits     atomic.Uint64
-	misses   atomic.Uint64
+	c      *lru.Cache[string, Entry]
+	hits   atomic.Uint64
+	misses atomic.Uint64
+	mu     sync.Mutex
+	flight map[string]*call
 }
 
-type lruItem struct {
-	key   string
-	entry Entry
+type call struct {
+	wg  sync.WaitGroup
+	ent Entry
+	ok  bool
 }
 
-// New creates an LRU with the given capacity (min 64).
-func New(capacity int) *Store {
-	if capacity < 64 {
-		capacity = 64
-	}
-	return &Store{
-		capacity: capacity,
-		ll:       list.New(),
-		items:    make(map[string]*list.Element, capacity),
-	}
+// New builds a store bounded by maxBytes.
+func New(maxBytes int64, ttl time.Duration) *Store {
+	return &Store{c: lru.New[string, Entry](0, maxBytes, ttl), flight: map[string]*call{}}
 }
 
-// Fingerprint hashes the routing-relevant request fields.
-func Fingerprint(virtualModel, mode string, messages any, tools json.RawMessage, structured bool) string {
-	type key struct {
-		Model      string          `json:"m"`
-		Mode       string          `json:"o"`
-		Messages   any             `json:"msg"`
-		Tools      json.RawMessage `json:"tools,omitempty"`
-		Structured bool            `json:"so,omitempty"`
+// Cacheable reports whether a request is deterministic enough to cache.
+func Cacheable(r *canon.Request) bool {
+	if r.Router.NoCache {
+		return false
 	}
-	b, _ := json.Marshal(key{
-		Model: virtualModel, Mode: mode, Messages: messages,
-		Tools: tools, Structured: structured,
-	})
+	if r.Router.ForceCache {
+		return true
+	}
+	return (r.Temperature != nil && *r.Temperature == 0) || r.Seed != nil
+}
+
+// Key hashes every field that can change the completion, plus the routing
+// constraints (so a quality-mode request never gets a cost-mode answer).
+func Key(r *canon.Request, routeKey string) string {
+	type k struct {
+		Route   string                `json:"r"`
+		Msgs    []canon.Message       `json:"m"`
+		Tools   []canon.Tool          `json:"t,omitempty"`
+		TC      canon.ToolChoice      `json:"tc"`
+		PTC     *bool                 `json:"p,omitempty"`
+		RF      *canon.ResponseFormat `json:"f,omitempty"`
+		Max     int                   `json:"x,omitempty"`
+		Temp    *float64              `json:"te,omitempty"`
+		TopP    *float64              `json:"tp,omitempty"`
+		Stop    []string              `json:"s,omitempty"`
+		Seed    *int64                `json:"sd,omitempty"`
+		Effort  string                `json:"e,omitempty"`
+		Allow   []string              `json:"a,omitempty"`
+		Deny    []string              `json:"d,omitempty"`
+		MinQ    float64               `json:"q,omitempty"`
+		MaxCost float64               `json:"c,omitempty"`
+	}
+	b, _ := json.Marshal(k{routeKey, r.Messages, r.Tools, r.ToolChoice, r.ParallelToolCalls, r.ResponseFormat,
+		r.MaxTokens, r.Temperature, r.TopP, r.Stop, r.Seed, r.ReasoningEffort,
+		r.Router.Allow, r.Router.Deny, r.Router.MinQuality, r.Router.MaxCostUSD})
 	sum := sha256.Sum256(b)
-	return hex.EncodeToString(sum[:16])
+	return hex.EncodeToString(sum[:])
 }
 
-// Get returns a cached entry if present.
-func (s *Store) Get(fp string) (Entry, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if el, ok := s.items[fp]; ok {
-		s.ll.MoveToFront(el)
+// Get returns a cached entry.
+func (s *Store) Get(key string) (Entry, bool) {
+	e, ok := s.c.Get(key)
+	if ok {
 		s.hits.Add(1)
-		return el.Value.(*lruItem).entry, true
+	} else {
+		s.misses.Add(1)
 	}
-	s.misses.Add(1)
-	return Entry{}, false
+	return e, ok
 }
 
-// Set inserts or refreshes an entry.
-func (s *Store) Set(fp string, e Entry) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if el, ok := s.items[fp]; ok {
-		s.ll.MoveToFront(el)
-		el.Value.(*lruItem).entry = e
-		return
+// Put stores an entry; cost is approximated by payload size.
+func (s *Store) Put(key string, e Entry) {
+	size := int64(len(e.Resp.Content) + len(e.Resp.Refusal) + 256)
+	for _, tc := range e.Resp.ToolCalls {
+		size += int64(len(tc.Arguments) + len(tc.Name) + len(tc.ID))
 	}
-	el := s.ll.PushFront(&lruItem{key: fp, entry: e})
-	s.items[fp] = el
-	for s.ll.Len() > s.capacity {
-		back := s.ll.Back()
-		if back == nil {
-			break
-		}
-		s.ll.Remove(back)
-		delete(s.items, back.Value.(*lruItem).key)
-	}
+	s.c.Put(key, e, size)
 }
 
-// Stats returns hit/miss counters.
-func (s *Store) Stats() (hits, misses uint64, size int) {
+// Do de-duplicates concurrent identical requests: the first caller runs fn,
+// followers wait and receive its result. shared reports a follower.
+func (s *Store) Do(key string, fn func() (Entry, bool)) (ent Entry, ok, shared bool) {
 	s.mu.Lock()
-	size = s.ll.Len()
+	if c, inflight := s.flight[key]; inflight {
+		s.mu.Unlock()
+		c.wg.Wait()
+		return c.ent, c.ok, true
+	}
+	c := &call{}
+	c.wg.Add(1)
+	s.flight[key] = c
 	s.mu.Unlock()
-	return s.hits.Load(), s.misses.Load(), size
+	defer func() {
+		s.mu.Lock()
+		delete(s.flight, key)
+		s.mu.Unlock()
+		c.wg.Done()
+	}()
+	c.ent, c.ok = fn()
+	if c.ok {
+		s.Put(key, c.ent)
+	}
+	return c.ent, c.ok, false
+}
+
+// Stats returns hit/miss counts and resident bytes.
+func (s *Store) Stats() (hits, misses uint64, items int, bytes int64) {
+	return s.hits.Load(), s.misses.Load(), s.c.Len(), s.c.Cost()
 }

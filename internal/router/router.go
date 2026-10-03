@@ -1,328 +1,227 @@
-// Package router orchestrates features → score → policy → tier → candidate.
-// Policy: prefer Luna; escalate to Terra; use Sol only when the work demands it.
+// Package router ties the decision pipeline together:
+//
+//	model name → pin & mode → features → embedding prediction → optimizer
+//
+// with session affinity, learned abilities, health, and the budget λ.
 package router
 
 import (
+	"fmt"
+	"math/rand/v2"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
-	"github.com/desenyon/modelrouter/internal/classifier"
-	"github.com/desenyon/modelrouter/internal/config"
+	"github.com/desenyon/modelrouter/internal/canon"
+	"github.com/desenyon/modelrouter/internal/catalog"
+	"github.com/desenyon/modelrouter/internal/control"
 	"github.com/desenyon/modelrouter/internal/features"
 	"github.com/desenyon/modelrouter/internal/health"
-	"github.com/desenyon/modelrouter/internal/models"
-	"github.com/desenyon/modelrouter/internal/policy"
+	"github.com/desenyon/modelrouter/internal/learn"
+	"github.com/desenyon/modelrouter/internal/optimize"
+	"github.com/desenyon/modelrouter/internal/predict"
+	"github.com/desenyon/modelrouter/internal/session"
 )
+
+// Router is safe for concurrent use.
+type Router struct {
+	Catalog     *catalog.Catalog
+	Predictor   *predict.Predictor
+	Health      *health.Tracker
+	Sessions    *session.Store
+	Learner     *learn.Learner // optional
+	Budget      *control.Budget
+	Objectives  map[optimize.Mode]optimize.Objective
+	DefaultMode optimize.Mode
+	Ready       func(provider string) bool
+	Explore     float64
+	SwitchUSD   float64
+
+	rngMu sync.Mutex
+	rng   *rand.Rand
+}
 
 // Decision is the full routing outcome for one request.
 type Decision struct {
-	RequestedModel string             `json:"requested_model"`
-	Mode           config.Mode        `json:"mode"`
-	Tier           models.Tier        `json:"tier"`
-	UpstreamModel  string             `json:"upstream_model"`
-	Score          float64            `json:"score"`
-	Reasons        []string           `json:"reasons"`
-	Features       features.Vector    `json:"features"`
-	Policy         policy.Effect      `json:"policy"`
-	Candidates     []string           `json:"candidates_considered"`
-	CircuitState   health.State       `json:"circuit_state,omitempty"`
-	LunaMax        float64            `json:"luna_max_effective"`
-	TerraMax       float64            `json:"terra_max_effective"`
-	Passthrough    bool               `json:"passthrough"`
-	AllowCascade   bool               `json:"allow_cascade"`
+	Plan        *optimize.Plan
+	Pin         optimize.Pin
+	Mode        optimize.Mode
+	SessionKey  string
+	Session     *session.State
+	Vec         []float32
+	Lex         predict.Lex
+	Full, Prev  string
+	RoutingTime time.Duration
 }
 
-// Engine applies Luna-first routing with adaptive thresholds and health awareness.
-type Engine struct {
-	cfg      config.Config
-	registry models.Registry
-	policy   *policy.Engine
-	health   *health.Tracker
-
-	adaptMu    sync.Mutex
-	lunaMax    float64
-	terraMax   float64
-	routedN    atomic.Uint64
-	solN       atomic.Uint64
-	scoreEWMA  float64
-	scoreSamples int
+// Target is a parsed requested-model name.
+type Target struct {
+	Pin  optimize.Pin
+	Mode optimize.Mode // "" = unspecified
+	// Passthrough is set for uncatalogued explicit model ids.
+	PassProvider, PassModel string
 }
 
-// New builds a routing engine from config.
-func New(cfg config.Config, ht *health.Tracker) *Engine {
-	if ht == nil {
-		ht = health.New()
-	}
-	return &Engine{
-		cfg:      cfg,
-		registry: models.NewRegistry(cfg.Models),
-		policy:   policy.New(cfg.Policy),
-		health:   ht,
-		lunaMax:  cfg.Router.LunaMaxScore,
-		terraMax: cfg.Router.TerraMaxScore,
-	}
+// VirtualModels are the router's own model names (listed on /v1/models).
+var VirtualModels = []struct{ ID, Description string }{
+	{"auto", "Best expected value per request (balance mode)"},
+	{"auto:cost", "Cheapest model likely to succeed; accepts more risk"},
+	{"auto:quality", "Highest success probability; spends when it helps"},
+	{"auto:fast", "Lowest latency among models likely to succeed"},
+	{"luna", "Efficient tier: gpt-6-luna, claude-haiku-4-5, gemini flash-lite"},
+	{"terra", "Balanced tier: claude-sonnet-5-5, gemini-3.8-flash, gpt-5.6-terra"},
+	{"sol", "Frontier tier: gpt-6.1-sol, claude-opus-5-5, gemini-3.1-pro"},
+	{"astra", "Most capable tier: gpt-6-astra, claude-fable-5-1"},
+	{"openai/auto", "Router restricted to OpenAI models"},
+	{"anthropic/auto", "Router restricted to Anthropic models"},
+	{"gemini/auto", "Router restricted to Gemini models"},
 }
 
-// Registry exposes the model registry.
-func (e *Engine) Registry() models.Registry { return e.registry }
-
-// Config returns a copy of the engine config.
-func (e *Engine) Config() config.Config { return e.cfg }
-
-// Health returns the shared health tracker.
-func (e *Engine) Health() *health.Tracker { return e.health }
-
-// Thresholds returns the effective (possibly adapted) thresholds.
-func (e *Engine) Thresholds() (luna, terra float64) {
-	e.adaptMu.Lock()
-	defer e.adaptMu.Unlock()
-	return e.lunaMax, e.terraMax
-}
-
-// RouteInput is everything needed to make a decision.
-type RouteInput struct {
-	Model string
-	Mode  config.Mode
-	Req   classifier.Request
-}
-
-// Route classifies the request and selects an upstream model.
-func (e *Engine) Route(in RouteInput) Decision {
-	model := strings.TrimSpace(in.Model)
-	if model == "" {
-		model = "auto"
+// ParseTarget interprets a requested model name.
+func ParseTarget(cat *catalog.Catalog, name string) (Target, error) {
+	n := strings.ToLower(strings.TrimSpace(name))
+	n = strings.TrimPrefix(n, "modelrouter/")
+	switch n {
+	case "", "auto", "router", "modelrouter", "auto-smart", "default":
+		return Target{}, nil
 	}
-
-	mode := in.Mode
-	if mode == "" {
-		mode = e.cfg.ModeOrDefault()
-	}
-
-	if !models.IsVirtual(model) {
-		return Decision{
-			RequestedModel: model,
-			Mode:           mode,
-			UpstreamModel:  model,
-			Passthrough:    true,
-			Reasons:        []string{"explicit upstream model"},
-			AllowCascade:   true,
-			CircuitState:   e.health.StateOf(model),
-		}
-	}
-
-	var pin models.Tier
-	if t, ok := models.ForcedTier(model); ok {
-		pin = t
-	}
-
-	class := classifier.Classify(in.Req)
-	lunaMax, terraMax := e.Thresholds()
-
-	base := e.pickTier(mode, class.Score, lunaMax, terraMax)
-	eff := e.policy.Evaluate(mode, class.Score, class.Features, pin)
-	tier := policy.Apply(base, eff)
-
-	// Hard guarantee: never spend Sol when Luna clearly fits.
-	if tier == models.TierSol && class.Score <= lunaMax {
-		tier = models.TierLuna
-		eff.Hits = append(eff.Hits, "sol_suppressed_luna_sufficient")
-		eff.SuppressSol = true
-	}
-
-	candidates, chosen, circ := e.pickCandidate(tier, eff)
-	reasons := append([]string{}, class.Reasons...)
-	reasons = append(reasons, "mode="+string(mode), "policy=luna-first")
-	reasons = append(reasons, eff.Hits...)
-
-	return Decision{
-		RequestedModel: model,
-		Mode:           mode,
-		Tier:           tier,
-		UpstreamModel:  chosen,
-		Score:          class.Score,
-		Reasons:        reasons,
-		Features:       class.Features,
-		Policy:         eff,
-		Candidates:     candidates,
-		CircuitState:   circ,
-		LunaMax:        lunaMax,
-		TerraMax:       terraMax,
-		AllowCascade:   eff.AllowCascade && e.cfg.Cascade.Enabled,
-	}
-}
-
-func (e *Engine) pickTier(mode config.Mode, score, lunaMax, terraMax float64) models.Tier {
-	switch mode {
-	case config.ModeCost:
-		switch {
-		case score <= lunaMax+0.12:
-			return models.TierLuna
-		case score <= terraMax+0.08:
-			return models.TierTerra
-		default:
-			return models.TierSol
-		}
-	case config.ModeIntelligence:
-		switch {
-		case score <= lunaMax*0.7:
-			return models.TierLuna
-		case score <= terraMax:
-			return models.TierTerra
-		default:
-			return models.TierSol
-		}
-	default:
-		switch {
-		case score <= lunaMax:
-			return models.TierLuna
-		case score <= terraMax:
-			return models.TierTerra
-		default:
-			return models.TierSol
-		}
-	}
-}
-
-// pickCandidate walks primary+fallbacks for the tier; if all open and escalate
-// is allowed, tries the next tier (never Sol when suppressed).
-func (e *Engine) pickCandidate(tier models.Tier, eff policy.Effect) (considered []string, chosen string, st health.State) {
-	try := []models.Tier{tier}
-	if next := tier.Next(); next != "" {
-		if !(eff.SuppressSol && next == models.TierSol) {
-			if eff.MaxTier == "" || next.Order() <= eff.MaxTier.Order() {
-				try = append(try, next)
+	for _, sep := range []string{":", "-"} {
+		if rest, ok := strings.CutPrefix(n, "auto"+sep); ok {
+			if m, ok := optimize.ParseMode(rest); ok {
+				return Target{Mode: m}, nil
+			}
+			if t, ok := catalog.ParseTier(rest); ok {
+				return Target{Pin: optimize.Pin{Kind: optimize.PinTier, Tier: t}}, nil
+			}
+			if isProvider(rest) {
+				return Target{Pin: optimize.Pin{Kind: optimize.PinProvider, Provider: normProvider(rest)}}, nil
 			}
 		}
 	}
-
-	for _, t := range try {
-		for _, m := range e.registry.Candidates(t) {
-			considered = append(considered, m)
-			if e.health.Allow(m) {
-				return considered, m, e.health.StateOf(m)
-			}
-		}
+	if t, ok := catalog.ParseTier(n); ok {
+		return Target{Pin: optimize.Pin{Kind: optimize.PinTier, Tier: t}}, nil
 	}
-	// All open — return primary of original tier anyway (fail open for availability).
-	primary := e.registry.ResolveTier(tier)
-	considered = append(considered, primary+"#forced")
-	return considered, primary, health.Open
+	if p, rest, ok := strings.Cut(n, "/"); ok && rest == "auto" && isProvider(p) {
+		return Target{Pin: optimize.Pin{Kind: optimize.PinProvider, Provider: normProvider(p)}}, nil
+	}
+	if m, ok := cat.Lookup(name); ok {
+		return Target{Pin: optimize.Pin{Kind: optimize.PinModel, Model: m}}, nil
+	}
+	prov, up := catalog.GuessProvider(name)
+	if prov == "" {
+		return Target{}, fmt.Errorf("unknown model %q: use auto, a tier (luna|terra|sol|astra), or a provider model id", name)
+	}
+	return Target{PassProvider: prov, PassModel: up}, nil
 }
 
-// RecordOutcome updates adaptive thresholds and health after a completed route.
-func (e *Engine) RecordOutcome(dec Decision, latencyMs float64, success bool, errMsg string) {
-	lat0 := time.Duration(latencyMs * float64(time.Millisecond))
-	if dec.Passthrough {
-		if success {
-			e.health.RecordSuccess(dec.UpstreamModel, lat0)
-		} else {
-			e.health.RecordFailure(dec.UpstreamModel, errMsg)
-		}
-		return
+func isProvider(s string) bool {
+	switch s {
+	case "openai", "anthropic", "gemini", "google":
+		return true
 	}
-
-	lat := time.Duration(latencyMs * float64(time.Millisecond))
-	if success {
-		e.health.RecordSuccess(dec.UpstreamModel, lat)
-	} else {
-		e.health.RecordFailure(dec.UpstreamModel, errMsg)
-	}
-
-	if !e.cfg.Router.Adaptive {
-		return
-	}
-
-	e.routedN.Add(1)
-	if dec.Tier == models.TierSol {
-		e.solN.Add(1)
-	}
-
-	e.adaptMu.Lock()
-	defer e.adaptMu.Unlock()
-	if e.scoreSamples == 0 {
-		e.scoreEWMA = dec.Score
-	} else {
-		e.scoreEWMA = 0.2*dec.Score + 0.8*e.scoreEWMA
-	}
-	e.scoreSamples++
-
-	routed := e.routedN.Load()
-	if routed < 20 {
-		return
-	}
-	solShare := float64(e.solN.Load()) / float64(routed)
-	target := e.cfg.Router.SolShareTarget
-	baseLuna := e.cfg.Router.LunaMaxScore
-	baseTerra := e.cfg.Router.TerraMaxScore
-
-	// If Sol share spikes, raise luna_max slightly (send more to Luna).
-	delta := 0.0
-	if solShare > target+0.05 {
-		delta = 0.03
-	} else if solShare < target*0.4 && e.scoreEWMA > baseLuna {
-		delta = -0.02 // slightly more Terra/Sol room when Sol is rare and scores high
-	}
-	e.lunaMax = clamp(baseLuna+delta, baseLuna-0.05, baseLuna+0.05)
-	e.terraMax = clamp(baseTerra+delta*0.5, baseTerra-0.05, baseTerra+0.05)
-	if e.terraMax <= e.lunaMax {
-		e.terraMax = e.lunaMax + 0.15
-	}
+	return false
 }
 
-// Escalate returns a follow-up decision for cascade retry.
-func (e *Engine) Escalate(prev Decision) (Decision, bool) {
-	if !prev.AllowCascade || prev.Passthrough {
-		return Decision{}, false
+func normProvider(s string) string {
+	if s == "google" {
+		return "gemini"
 	}
-	nextTier := prev.Tier.Next()
-	if nextTier == "" {
-		// try next candidate in same tier
-		cands := e.registry.Candidates(prev.Tier)
-		for i, m := range cands {
-			if m == prev.UpstreamModel && i+1 < len(cands) {
-				alt := cands[i+1]
-				if !e.health.Allow(alt) {
-					continue
-				}
-				out := prev
-				out.UpstreamModel = alt
-				out.Candidates = append(out.Candidates, alt)
-				out.Reasons = append(out.Reasons, "cascade_same_tier")
-				out.AllowCascade = false // one shot
-				return out, true
-			}
-		}
-		return Decision{}, false
-	}
-	if prev.Policy.SuppressSol && nextTier == models.TierSol {
-		return Decision{}, false
-	}
-	if prev.Policy.ForceTier == models.TierLuna && !prev.Policy.AllowCascade {
-		return Decision{}, false
-	}
-
-	cands, chosen, circ := e.pickCandidate(nextTier, prev.Policy)
-	if chosen == "" || chosen == prev.UpstreamModel {
-		return Decision{}, false
-	}
-	out := prev
-	out.Tier = nextTier
-	out.UpstreamModel = chosen
-	out.Candidates = append(out.Candidates, cands...)
-	out.CircuitState = circ
-	out.Reasons = append(out.Reasons, "cascade:"+string(prev.Tier)+"→"+string(nextTier))
-	out.AllowCascade = false
-	return out, true
+	return s
 }
 
-func clamp(v, lo, hi float64) float64 {
-	if v < lo {
-		return lo
+// Route makes a routing decision for req.
+func (r *Router) Route(req *canon.Request) (*Decision, error) {
+	start := time.Now()
+	tgt, err := ParseTarget(r.Catalog, req.Model)
+	if err != nil {
+		return nil, err
 	}
-	if v > hi {
-		return hi
+	mode := r.DefaultMode
+	if tgt.Mode != "" {
+		mode = tgt.Mode
 	}
-	return v
+	if req.Router.Mode != "" {
+		m, ok := optimize.ParseMode(req.Router.Mode)
+		if !ok {
+			return nil, fmt.Errorf("unknown router mode %q (cost|balance|quality|fast)", req.Router.Mode)
+		}
+		mode = m
+	}
+	pin := tgt.Pin
+	if tgt.PassModel != "" {
+		// Explicit, uncatalogued model: synthesize an entry so it can be dispatched.
+		pin = optimize.Pin{Kind: optimize.PinModel, Model: passthroughModel(tgt.PassProvider, tgt.PassModel)}
+	}
+	dec := &Decision{Pin: pin, Mode: mode}
+	dec.SessionKey = session.Key(req)
+	if st, ok := r.Sessions.Get(dec.SessionKey); ok {
+		dec.Session = &st
+	}
+	dec.Full, dec.Prev = session.Fingerprints(req)
+
+	feat := features.Extract(req)
+	pred, vec, lex := r.Predictor.Predict(req, feat)
+	dec.Vec, dec.Lex = vec, lex
+
+	env := optimize.Env{
+		ProviderReady: r.Ready,
+		Health:        r.Health.Available,
+		Speed: func(id string) (float64, float64, int) {
+			t, p, n, _ := r.Health.Speed(id)
+			return t, p, n
+		},
+		Now:       time.Now(),
+		Lambda:    r.Budget.Lambda(),
+		Explore:   r.Explore,
+		SwitchUSD: r.SwitchUSD,
+	}
+	if r.Learner != nil {
+		env.Ability = r.Learner.Ability
+	}
+	if r.Explore > 0 {
+		r.rngMu.Lock()
+		if r.rng == nil {
+			r.rng = rand.New(rand.NewPCG(uint64(time.Now().UnixNano()), 0x9e3779b97f4a7c15))
+		}
+		env.Rand = rand.New(rand.NewPCG(r.rng.Uint64(), r.rng.Uint64()))
+		r.rngMu.Unlock()
+	}
+	in := optimize.Input{Req: req, Feat: feat, Pred: pred, Mode: mode, Obj: r.Objectives[mode], Pin: pin, Session: dec.Session}
+	plan, err := optimize.Optimize(r.Catalog, in, env)
+	if err != nil {
+		return nil, err
+	}
+	plan.Passthrough = tgt.PassModel != ""
+	dec.Plan = plan
+	dec.RoutingTime = time.Since(start)
+	return dec, nil
+}
+
+// Commit records which model served a conversation turn (for affinity).
+func (r *Router) Commit(dec *Decision, c *optimize.Candidate, inputTokens int) {
+	if dec.SessionKey == "" || c == nil {
+		return
+	}
+	turns := 1
+	if dec.Session != nil {
+		turns = dec.Session.Turns + 1
+	}
+	r.Sessions.Put(dec.SessionKey, session.State{
+		ModelID: c.ModelID, Provider: c.Model.Provider, TierRank: c.Model.Tier.Rank(),
+		InputTokens: inputTokens, At: time.Now(), Turns: turns,
+	})
+}
+
+func passthroughModel(provider, upstream string) *catalog.Model {
+	lvl := 0.8
+	var ab catalog.Vec
+	for i := range ab {
+		ab[i] = lvl
+	}
+	return &catalog.Model{
+		ID: provider + "/" + upstream, Provider: provider, UpstreamID: upstream, Display: upstream,
+		Tier: catalog.Terra, Context: 2_000_000, MaxOutput: 32768, Ability: ab, TTFTms: 1000, TPS: 80, Verbosity: 1,
+		Caps:  catalog.Caps{Tools: true, ForcedToolChoice: true, Vision: true, ImageURLs: true, PDF: true, JSONSchema: true, Sampling: true, Prefill: true, Seed: true},
+		Notes: "uncatalogued passthrough; cost unknown",
+	}
 }

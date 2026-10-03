@@ -1,0 +1,43 @@
+{"t":"What is 17 + 25?","d":0.04,"a":{"math":1},"o":10}
+{"t":"What is 15% of 240?","d":0.04,"a":{"math":1},"o":15}
+{"t":"Convert 100 Fahrenheit to Celsius","d":0.07,"a":{"math":0.6,"knowledge":0.4},"o":40}
+{"t":"Solve for x: 3x + 7 = 22","d":0.06,"a":{"math":1},"o":40}
+{"t":"What is the derivative of x^3 + 2x?","d":0.1,"a":{"math":1},"o":40}
+{"t":"Calculate compound interest on $5000 at 4% for 10 years compounded monthly","d":0.12,"a":{"math":1},"o":120}
+{"t":"Solve the system: 2x + y = 10, x - y = 2","d":0.1,"a":{"math":1},"o":100}
+{"t":"Find the integral of x * e^x dx","d":0.18,"a":{"math":1},"o":150}
+{"t":"Explain Bayes' theorem with a medical testing example","d":0.24,"a":{"math":0.6,"knowledge":0.4},"o":450}
+{"t":"A bag has 5 red and 3 blue balls. Drawing 3 without replacement, what's the probability exactly 2 are red?","d":0.22,"a":{"math":0.8,"reasoning":0.2},"o":200}
+{"t":"Prove that the square root of 2 is irrational","d":0.26,"a":{"math":0.8,"reasoning":0.2},"o":300}
+{"t":"Find the eigenvalues and eigenvectors of [[2,1],[1,2]]","d":0.22,"a":{"math":1},"o":300}
+{"t":"Solve the differential equation y'' + 4y = sin(2x)","d":0.42,"a":{"math":1},"o":500}
+{"t":"Prove that there are infinitely many primes","d":0.3,"a":{"math":0.8,"reasoning":0.2},"o":300}
+{"t":"Compute the Fourier transform of a Gaussian and explain why it is self-similar","d":0.45,"a":{"math":0.9,"reasoning":0.1},"o":600}
+{"t":"Prove that every group of order p^2 is abelian","d":0.58,"a":{"math":0.8,"reasoning":0.2},"o":600}
+{"t":"Evaluate ∫_0^∞ sin(x)/x dx using contour integration","d":0.6,"a":{"math":0.9,"reasoning":0.1},"o":800}
+{"t":"Prove the Cauchy-Schwarz inequality and give three applications in analysis","d":0.5,"a":{"math":0.9,"reasoning":0.1},"o":900}
+{"t":"Find all functions f: R → R with f(x + f(y)) = f(x) + y for all real x, y, and prove completeness","d":0.82,"a":{"math":0.7,"reasoning":0.3},"o":1200}
+{"t":"Let a, b, c > 0 with abc = 1. Prove a/(b+c) + b/(c+a) + c/(a+b) ≥ 3/2 and find the equality case","d":0.72,"a":{"math":0.7,"reasoning":0.3},"o":900}
+{"t":"Solve IMO 2023 Problem 6 with a complete rigorous proof","d":0.97,"a":{"math":0.7,"reasoning":0.3},"o":3000}
+{"t":"Prove there are infinitely many twin primes, or explain precisely why it is open and summarize the partial results of Zhang, Maynard and Polymath","d":0.82,"a":{"math":0.6,"knowledge":0.3,"reasoning":0.1},"o":1500}
+{"t":"Give a self-contained proof of the Prime Number Theorem via complex analysis, including non-vanishing of zeta on Re(s)=1","d":0.9,"a":{"math":0.8,"reasoning":0.2},"o":4000}
+{"t":"Derive the Black-Scholes PDE using Itô's lemma and a delta-hedged portfolio","d":0.66,"a":{"math":0.8,"knowledge":0.2},"o":1200}
+{"t":"Show pointwise limits of continuous functions need not be continuous, then prove when uniform convergence fixes it","d":0.55,"a":{"math":0.8,"reasoning":0.2},"o":900}
+{"t":"Prove that no simple group of order 120 exists using Sylow theorems","d":0.74,"a":{"math":0.8,"reasoning":0.2},"o":1500}
+{"t":"Formalize in Lean 4 the proof that there are infinitely many primes","d":0.68,"a":{"math":0.5,"coding":0.4,"reasoning":0.1},"o":800}
+{"t":"Derive the backpropagation equations for an LSTM cell from scratch","d":0.56,"a":{"math":0.7,"knowledge":0.3},"o":1500}
+{"t":"Prove the convergence rate of gradient descent on smooth strongly convex functions","d":0.6,"a":{"math":0.9,"reasoning":0.1},"o":900}
+{"t":"Explain what a p-value is and common misinterpretations","d":0.2,"a":{"math":0.4,"knowledge":0.6},"o":450}
+{"t":"Which statistical test compares means of three groups with unequal variances?","d":0.26,"a":{"math":0.5,"knowledge":0.5},"o":350}
+{"t":"Design an A/B test for a pricing change: sample size for a 2% lift at 80% power, plus novelty effects and SRM checks","d":0.5,"a":{"math":0.5,"reasoning":0.3,"knowledge":0.2},"o":900}
+{"t":"Fit a hierarchical Bayesian model in Stan for multi-site trial results and explain partial pooling","d":0.66,"a":{"math":0.6,"coding":0.3,"knowledge":0.1},"o":1500}
+{"t":"Prove safety of a Byzantine fault tolerant protocol for f < n/3 faulty nodes","d":0.88,"a":{"reasoning":0.5,"math":0.4,"coding":0.1},"o":2500}
+{"t":"If all bloops are razzies and all razzies are lazzies, are all bloops lazzies?","d":0.08,"a":{"reasoning":1},"o":40}
+{"t":"I have 3 apples, eat one, buy 4 more and give half away. How many do I have?","d":0.08,"a":{"reasoning":0.6,"math":0.4},"o":60}
+{"t":"Which is heavier, a pound of feathers or a pound of bricks?","d":0.06,"a":{"reasoning":1},"o":30}
+{"t":"A farmer must cross a river with a wolf, a goat and a cabbage; the boat holds him and one item. How?","d":0.2,"a":{"reasoning":1},"o":250}
+{"t":"Five people sit in a row under eight seating constraints. Who sits in the middle? Show the deduction.","d":0.5,"a":{"reasoning":0.9,"math":0.1},"o":600}
+{"t":"Twelve coins, one counterfeit heavier or lighter, three weighings: give the full decision tree","d":0.62,"a":{"reasoning":0.8,"math":0.2},"o":1000}
+{"t":"Solve this 25-clue zebra puzzle and explain the deduction chain","d":0.6,"a":{"reasoning":1},"o":1500}
+{"t":"Find the forced mate in 4 in this chess position and explain each candidate line","d":0.75,"a":{"reasoning":0.9,"knowledge":0.1},"o":800}
+{"t":"Solve the three gods puzzle (True, False, Random answering 'da' or 'ja') with three yes-no questions","d":0.8,"a":{"reasoning":1},"o":1500}

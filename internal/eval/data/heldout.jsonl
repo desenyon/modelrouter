@@ -1,0 +1,53 @@
+{"t":"hey there","d":0.02,"a":{"creative":1},"o":20}
+{"t":"thank you so much!","d":0.02,"a":{"creative":1},"o":20}
+{"t":"What's the tallest mountain in Africa?","d":0.04,"a":{"knowledge":1},"o":15}
+{"t":"How many ounces are in a pound?","d":0.04,"a":{"knowledge":1},"o":10}
+{"t":"Translate 'where is the train station' into German","d":0.05,"a":{"knowledge":0.7,"creative":0.3},"o":15}
+{"t":"Write a two-line rhyme about Mondays","d":0.08,"a":{"creative":1},"o":30}
+{"t":"Proofread this paragraph and fix any spelling mistakes","d":0.08,"a":{"instruction":0.6,"creative":0.4},"o":200}
+{"t":"Turn these meeting notes into a bulleted list of action items with owners","d":0.12,"a":{"instruction":0.8,"knowledge":0.2},"o":200}
+{"t":"Write a thank-you note to my child's teacher","d":0.06,"a":{"creative":1},"o":80}
+{"t":"Explain how compound interest works with an example","d":0.12,"a":{"math":0.4,"knowledge":0.6},"o":300}
+{"t":"What's the difference between a list and a tuple in Python?","d":0.06,"a":{"coding":0.7,"knowledge":0.3},"o":150}
+{"t":"Write a JavaScript function that debounces another function","d":0.16,"a":{"coding":1},"o":150}
+{"t":"Write a SQL query that finds duplicate emails in the users table","d":0.1,"a":{"coding":1},"o":80}
+{"t":"How do I undo the last git commit but keep my changes?","d":0.07,"a":{"coding":1},"o":80}
+{"t":"Write a Go HTTP handler that returns JSON with proper error handling","d":0.16,"a":{"coding":1},"o":250}
+{"t":"Build a Flask app with user registration, login and a profile page backed by SQLite","d":0.3,"a":{"coding":1},"o":1200}
+{"t":"My React app re-renders constantly and the page freezes. Here's the component with useEffect. What's wrong?","d":0.34,"a":{"coding":0.8,"reasoning":0.2},"o":500}
+{"t":"Write integration tests for this payment service using testcontainers","d":0.4,"a":{"coding":1},"o":1200}
+{"t":"Our Go service leaks goroutines under load; here is pprof output. Find the leak.","d":0.58,"a":{"coding":0.6,"reasoning":0.4},"o":800}
+{"t":"Implement a B+ tree with range scans and node splitting/merging in Rust","d":0.68,"a":{"coding":0.8,"reasoning":0.2},"o":3000}
+{"t":"Write a lock-free skip list in C++ with epoch-based memory reclamation and justify the memory orderings","d":0.86,"a":{"coding":0.7,"reasoning":0.3},"o":2500}
+{"t":"Implement Paxos (multi-decree) in Java with a simulation harness that injects message loss and reordering","d":0.86,"a":{"coding":0.6,"reasoning":0.4},"o":5000}
+{"t":"Design a globally distributed rate limiter for an API gateway handling 1M requests per second","d":0.7,"a":{"reasoning":0.5,"coding":0.4,"knowledge":0.1},"o":1800}
+{"t":"Write a JIT compiler for a stack-based VM targeting x86-64 with register allocation","d":0.9,"a":{"coding":0.7,"reasoning":0.3},"o":5000}
+{"t":"What is 9 times 8?","d":0.03,"a":{"math":1},"o":10}
+{"t":"Find the area of a circle with radius 7 cm","d":0.05,"a":{"math":1},"o":30}
+{"t":"Solve the quadratic equation 2x^2 - 5x + 3 = 0","d":0.1,"a":{"math":1},"o":100}
+{"t":"Compute the limit of (1 + 1/n)^n as n goes to infinity and explain why","d":0.24,"a":{"math":0.9,"reasoning":0.1},"o":300}
+{"t":"Prove by induction that the sum of the first n odd numbers is n^2","d":0.2,"a":{"math":0.8,"reasoning":0.2},"o":250}
+{"t":"Prove that a continuous function on a closed bounded interval attains its maximum","d":0.48,"a":{"math":0.9,"reasoning":0.1},"o":600}
+{"t":"Prove that the alternating group A5 is simple","d":0.72,"a":{"math":0.8,"reasoning":0.2},"o":1500}
+{"t":"Prove the Riemann hypothesis","d":0.99,"a":{"math":0.8,"reasoning":0.2},"o":4000}
+{"t":"Determine all positive integers n such that n^2 + 1 divides n! and prove your characterization","d":0.88,"a":{"math":0.7,"reasoning":0.3},"o":2000}
+{"t":"A train leaves at 3pm going 60 mph, another at 4pm going 80 mph on the same track. When does the second catch up?","d":0.1,"a":{"math":0.6,"reasoning":0.4},"o":120}
+{"t":"Solve this Einstein-style logic grid puzzle with 6 houses and 30 clues","d":0.64,"a":{"reasoning":1},"o":1800}
+{"t":"Explain the water cycle","d":0.08,"a":{"knowledge":1},"o":300}
+{"t":"What caused the 2008 financial crisis?","d":0.24,"a":{"knowledge":0.8,"reasoning":0.2},"o":600}
+{"t":"Explain how CRISPR gene editing works","d":0.24,"a":{"knowledge":1},"o":500}
+{"t":"Analyze the geopolitical consequences of Arctic sea routes opening over the next 30 years for shipping, defense and indigenous communities","d":0.62,"a":{"reasoning":0.6,"knowledge":0.4},"o":1800}
+{"t":"Write a grant proposal specific aims page for a study on microplastics in freshwater fish, with hypotheses and methods","d":0.56,"a":{"knowledge":0.4,"creative":0.3,"reasoning":0.3},"o":1200}
+{"t":"Write a children's bedtime story about a brave little turtle","d":0.12,"a":{"creative":1},"o":500}
+{"t":"Write a 2000-word science fiction story about first contact told entirely through radio transcripts","d":0.44,"a":{"creative":1},"o":2700}
+{"t":"Compose a villanelle about grief that follows the form exactly, with the two refrains varying subtly in meaning","d":0.58,"a":{"creative":0.7,"instruction":0.3},"o":250}
+{"t":"Give me a 3-day itinerary for Rome","d":0.12,"a":{"knowledge":0.7,"creative":0.3},"o":700}
+{"t":"Suggest five healthy breakfast ideas","d":0.05,"a":{"knowledge":0.8,"creative":0.2},"o":200}
+{"t":"Use the calendar tool to find a free hour tomorrow and schedule a dentist reminder","d":0.1,"a":{"agentic":1},"o":80}
+{"t":"Go through the open GitHub issues, triage them by severity, label them, and draft responses for the top ten","d":0.5,"a":{"agentic":0.7,"instruction":0.3},"o":2000}
+{"t":"Migrate our test suite from Jest to Vitest across the monorepo, fixing any failures until CI passes","d":0.66,"a":{"agentic":0.5,"coding":0.5},"o":5000}
+{"t":"Summarize these 12 quarterly earnings call transcripts and track how management guidance changed over time","d":0.56,"a":{"long_context":0.6,"reasoning":0.3,"knowledge":0.1},"o":2000}
+{"t":"Output a JSON object with keys title and tags for this blog post","d":0.06,"a":{"instruction":1},"o":40}
+{"t":"Write exactly five sentences about rain where each sentence is shorter than the previous one and none uses the word 'water'","d":0.42,"a":{"instruction":0.7,"creative":0.3},"o":100}
+{"t":"Explique-moi la photosynthèse simplement","d":0.08,"a":{"knowledge":1},"o":250}
+{"t":"Escribe un poema corto sobre el mar","d":0.1,"a":{"creative":1},"o":100}

@@ -1,0 +1,17 @@
+{"t":"Use the weather tool to get today's forecast for Boston","d":0.06,"a":{"agentic":1},"o":50}
+{"t":"Look up the status of order #12345 using the available tools","d":0.08,"a":{"agentic":1},"o":60}
+{"t":"Search the web for the latest AWS Lambda pricing and summarize it","d":0.24,"a":{"agentic":0.6,"knowledge":0.4},"o":300}
+{"t":"Book a meeting with Sarah next Tuesday afternoon and send her the agenda","d":0.2,"a":{"agentic":0.8,"instruction":0.2},"o":150}
+{"t":"Query the database for users who signed up last week and email them a welcome message","d":0.3,"a":{"agentic":0.8,"coding":0.2},"o":200}
+{"t":"Investigate why the nightly ETL job failed: read the logs, check upstream table schemas, and open a ticket with findings","d":0.55,"a":{"agentic":0.6,"reasoning":0.2,"coding":0.2},"o":800}
+{"t":"Fix the failing CI build: run the tests, read the errors, edit the code, repeat until green","d":0.6,"a":{"agentic":0.6,"coding":0.4},"o":1500}
+{"t":"Implement the feature in issue #482 end to end: explore the codebase, write code and tests, and open a pull request","d":0.72,"a":{"agentic":0.5,"coding":0.5},"o":4000}
+{"t":"As an autonomous research agent, gather sources, run analyses with the Python tool, and produce a cited 20-page report on the lithium supply chain","d":0.82,"a":{"agentic":0.6,"knowledge":0.2,"reasoning":0.2},"o":8000}
+{"t":"Download the dataset, clean it, train three models, compare them, and write up the results","d":0.66,"a":{"agentic":0.6,"coding":0.3,"reasoning":0.1},"o":3000}
+{"t":"Summarize this 200-page technical report and list the 10 most important findings with page references","d":0.45,"a":{"long_context":0.7,"instruction":0.3},"o":1200}
+{"t":"Here are transcripts of 30 customer interviews. Cluster recurring pain points into themes with representative quotes.","d":0.5,"a":{"long_context":0.6,"reasoning":0.4},"o":1500}
+{"t":"Compare these two versions of the contract and list every substantive change","d":0.36,"a":{"long_context":0.7,"instruction":0.3},"o":800}
+{"t":"From these 500 pages of meeting minutes, build a timeline of decisions and flag where later decisions contradict earlier ones","d":0.72,"a":{"long_context":0.6,"reasoning":0.4},"o":3000}
+{"t":"Read these three papers and write a related-work section positioning our method against them","d":0.5,"a":{"long_context":0.4,"knowledge":0.3,"creative":0.3},"o":1000}
+{"t":"Answer using only the provided documents and cite the document id for each claim","d":0.22,"a":{"instruction":0.5,"long_context":0.5},"o":300}
+{"t":"Review this 40-page services agreement and list clauses with uncapped liability or ambiguous IP ownership, quoting each","d":0.66,"a":{"long_context":0.5,"knowledge":0.3,"reasoning":0.2},"o":2000}
