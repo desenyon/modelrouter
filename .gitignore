@@ -16,3 +16,6 @@ config.yaml
 # Test / coverage
 *.out
 coverage.html
+
+# Locally provisioned embedding artifacts
+/.cache/

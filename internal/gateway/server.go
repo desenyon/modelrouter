@@ -55,7 +55,7 @@ type Server struct {
 	learner   *learn.Learner
 	budget    *control.Budget
 	health    *health.Tracker
-	embedder  *embed.Model
+	embedder  predict.Embedder
 	dlog      *telemetry.DecisionLog
 	reg       *telemetry.Registry
 	m         metrics
@@ -78,7 +78,7 @@ type metrics struct {
 // Options inject dependencies (tests); zero values build real ones.
 type Options struct {
 	Logger    *slog.Logger
-	Embedder  *embed.Model
+	Embedder  predict.Embedder
 	Providers map[string]provider.Provider
 }
 
@@ -261,7 +261,9 @@ func (s *Server) Close() {
 		}
 	}
 	if s.dlog != nil {
-		_ = s.dlog.Close()
+		if err := s.dlog.Close(); err != nil {
+			s.log.Warn("close decision log", "err", err)
+		}
 	}
 }
 
@@ -307,7 +309,7 @@ func bearer(r *http.Request) string {
 }
 
 // applyHeaders lets clients set routing options via headers.
-func applyHeaders(r *http.Request, req *canon.Request) {
+func applyHeaders(r *http.Request, req *canon.Request) error {
 	h := r.Header
 	if v := h.Get("X-Modelrouter-Mode"); v != "" {
 		req.Router.Mode = v
@@ -317,14 +319,20 @@ func applyHeaders(r *http.Request, req *canon.Request) {
 	if v := h.Get("X-Modelrouter-Session"); v != "" {
 		req.Router.SessionID = v
 	}
-	if v := h.Get("X-Modelrouter-Max-Cost"); v != "" {
-		if f, err := strconv.ParseFloat(v, 64); err == nil {
-			req.Router.MaxCostUSD = f
-		}
-	}
-	if v := h.Get("X-Modelrouter-Min-Quality"); v != "" {
-		if f, err := strconv.ParseFloat(v, 64); err == nil {
-			req.Router.MinQuality = f
+	for _, control := range []struct {
+		header string
+		dst    *float64
+	}{
+		{"X-Modelrouter-Max-Cost", &req.Router.MaxCostUSD},
+		{"X-Modelrouter-Max-Latency", &req.Router.MaxLatencyMs},
+		{"X-Modelrouter-Min-Quality", &req.Router.MinQuality},
+	} {
+		if v := h.Get(control.header); v != "" {
+			f, err := strconv.ParseFloat(v, 64)
+			if err != nil {
+				return fmt.Errorf("%s must be a number", control.header)
+			}
+			*control.dst = f
 		}
 	}
 	if v := h.Get("X-Modelrouter-Allow"); v != "" {
@@ -343,6 +351,7 @@ func applyHeaders(r *http.Request, req *canon.Request) {
 	if h.Get("X-Modelrouter-Cache") == "force" {
 		req.Router.ForceCache = true
 	}
+	return req.Validate()
 }
 
 func newID() string {
@@ -358,7 +367,10 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error(), "invalid_request_error")
 		return
 	}
-	applyHeaders(r, req)
+	if err := applyHeaders(r, req); err != nil {
+		writeError(w, 400, err.Error(), "invalid_request_error")
+		return
+	}
 	dec, err := s.Router.Route(req)
 	if err != nil {
 		code := http.StatusBadRequest
@@ -371,6 +383,8 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	s.m.routing.Observe(dec.RoutingTime.Seconds())
 	s.m.diff.Observe(dec.Plan.Prediction.Difficulty)
 	reqID := newID()
+	var res dispatch.Result
+	defer func() { s.after(req, dec, reqID, res, start) }()
 
 	// Response cache (deterministic requests only).
 	var ckey string
@@ -378,7 +392,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		ckey = cache.Key(req, strings.ToLower(req.Model)+"|"+string(dec.Mode))
 		if ent, ok := s.cache.Get(ckey); ok {
 			s.m.cache.Inc("hit")
-			s.serveCached(w, req, dec, reqID, ent)
+			res = s.serveCached(w, req, dec, reqID, ent, "hit")
 			return
 		}
 		s.m.cache.Inc("miss")
@@ -393,7 +407,6 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	cacheHint := dec.SessionKey != "" && (dec.Session != nil || dec.Plan.Features.UserTurns > 1 || dec.Plan.Features.InToolLoop)
 	job := dispatch.Job{Req: req, Plan: dec.Plan, Stream: req.Stream, RequestID: reqID, SessionKey: dec.SessionKey, CacheHint: cacheHint}
 
-	var res dispatch.Result
 	if req.Stream {
 		sink := &streamSink{s: s, w: w, req: req, dec: dec, reqID: reqID}
 		job.Sink = sink
@@ -410,7 +423,8 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	} else if ckey != "" {
 		var shared, ok bool
 		var ent cache.Entry
-		ent, ok, shared = s.cache.Do(ckey, func() (cache.Entry, bool) {
+		var waitErr error
+		ent, ok, shared, waitErr = s.cache.DoContext(ctx, ckey, func() (cache.Entry, bool) {
 			res = s.disp.Run(ctx, job)
 			ok := res.Err == nil && res.Final != nil && len(res.Quality) == 0
 			e := cache.Entry{Resp: res.Resp, At: time.Now(), CostUSD: res.CostUSD}
@@ -420,9 +434,13 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			return e, ok
 		})
 		switch {
+		case waitErr != nil:
+			res.Err = provider.Classify(waitErr, "", "")
+			s.writeUpstreamError(w, res.Err)
+			return
 		case shared && ok:
 			s.m.cache.Inc("shared")
-			s.serveCached(w, req, dec, reqID, ent)
+			res = s.serveCached(w, req, dec, reqID, ent, "shared")
 			return
 		case shared:
 			// The leader failed; don't replay its failure, try independently.
@@ -433,11 +451,10 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		res = s.disp.Run(ctx, job)
 		s.respond(w, req, dec, reqID, res)
 	}
-	s.after(req, dec, reqID, res, start)
 }
 
 func (s *Server) respond(w http.ResponseWriter, req *canon.Request, dec *router.Decision, reqID string, res dispatch.Result) {
-	if res.Final == nil {
+	if res.Err != nil || res.Final == nil {
 		s.writeUpstreamError(w, res.Err)
 		return
 	}
@@ -457,19 +474,31 @@ func (s *Server) respond(w http.ResponseWriter, req *canon.Request, dec *router.
 	_, _ = w.Write(body)
 }
 
-func (s *Server) serveCached(w http.ResponseWriter, req *canon.Request, dec *router.Decision, reqID string, ent cache.Entry) {
+func (s *Server) serveCached(w http.ResponseWriter, req *canon.Request, dec *router.Decision, reqID string, ent cache.Entry, cacheState string) dispatch.Result {
 	m, ok := s.Router.Catalog.Lookup(ent.ModelID)
+	if !ok && dec.Pin.Model != nil && dec.Pin.Model.ID == ent.ModelID {
+		m = dec.Pin.Model // explicit uncatalogued passthrough
+	}
+	res := dispatch.Result{Resp: ent.Resp, Cache: cacheState}
+	if m != nil {
+		res.Final = &optimize.Candidate{Model: m, ModelID: ent.ModelID, Tier: m.Tier, Effort: ent.Effort}
+	}
 	h := w.Header()
+	h.Set("X-Modelrouter-Request-Id", reqID)
 	if s.cfg.ShowHeaders() {
-		h.Set("X-Modelrouter-Request-Id", reqID)
 		h.Set("X-Modelrouter-Model", ent.ModelID)
 		h.Set("X-Modelrouter-Tier", ent.Tier)
+		h.Set("X-Modelrouter-Effort", ent.Effort)
+		if m != nil {
+			h.Set("X-Modelrouter-Provider", m.Provider)
+		}
 		h.Set("X-Modelrouter-Mode", string(dec.Mode))
 		h.Set("X-Modelrouter-Cache", "HIT")
+		h.Set("X-Modelrouter-Attempts", "0")
 		h.Set("X-Modelrouter-Cost", "0")
 	}
 	model := ent.ModelID
-	if ok {
+	if m != nil {
 		model = m.UpstreamID
 	}
 	if req.Stream {
@@ -478,15 +507,32 @@ func (s *Server) serveCached(w http.ResponseWriter, req *canon.Request, dec *rou
 		w.WriteHeader(http.StatusOK)
 		sw := apiopenai.NewStreamWriter(w, "chatcmpl-"+reqID, model, req.StreamUsage)
 		for _, ev := range ent.Resp.Events() {
-			_ = sw.Event(ev)
+			if err := sw.Event(ev); err != nil {
+				res.Err = &provider.Error{Kind: provider.KindCanceled, Message: err.Error(), Err: provider.ErrClientGone}
+				return res
+			}
 		}
-		_ = sw.Close()
-		return
+		if err := sw.Close(); err != nil {
+			res.Err = &provider.Error{Kind: provider.KindCanceled, Message: err.Error(), Err: provider.ErrClientGone}
+		}
+		return res
 	}
-	body, _ := apiopenai.Encode("chatcmpl-"+reqID, model, ent.Resp, nil)
+	var extra map[string]any
+	if req.Router.Explain {
+		extra = map[string]any{"modelrouter": explain(dec, &res)}
+	}
+	body, err := apiopenai.Encode("chatcmpl-"+reqID, model, ent.Resp, extra)
+	if err != nil {
+		res.Err = provider.AsError(err, "", ent.ModelID)
+		s.writeUpstreamError(w, res.Err)
+		return res
+	}
 	h.Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(body)
+	if _, err := w.Write(body); err != nil {
+		res.Err = &provider.Error{Kind: provider.KindCanceled, Message: err.Error(), Err: provider.ErrClientGone}
+	}
+	return res
 }
 
 type streamSink struct {
@@ -560,11 +606,18 @@ func (s *Server) writeUpstreamError(w http.ResponseWriter, e *provider.Error) {
 // after records metrics, learning, affinity, budget and the decision log.
 func (s *Server) after(req *canon.Request, dec *router.Decision, reqID string, res dispatch.Result, start time.Time) {
 	outcome := "ok"
+	if res.Cache != "" {
+		outcome = "cache_" + res.Cache
+	}
 	if res.Err != nil {
 		outcome = res.Err.Kind.String()
 	}
 	for _, a := range res.Attempts {
 		s.m.attempts.Inc(a.ModelID, a.Outcome)
+		s.m.tokens.Add(float64(a.Usage.InputTokens), a.ModelID, "input")
+		s.m.tokens.Add(float64(a.Usage.OutputTokens), a.ModelID, "output")
+		s.m.tokens.Add(float64(a.Usage.CachedTokens), a.ModelID, "cached")
+		s.m.tokens.Add(float64(a.Usage.ReasoningTokens), a.ModelID, "reasoning")
 		if a.CostUSD > 0 {
 			s.m.cost.Add(a.CostUSD, a.ModelID)
 		}
@@ -577,17 +630,19 @@ func (s *Server) after(req *canon.Request, dec *router.Decision, reqID string, r
 	if f := res.Final; f != nil {
 		u := res.Resp.Usage
 		s.m.requests.Inc(f.ModelID, f.Model.Provider, string(f.Model.Tier), string(dec.Mode), outcome)
-		s.m.tokens.Add(float64(u.InputTokens), f.ModelID, "input")
-		s.m.tokens.Add(float64(u.OutputTokens), f.ModelID, "output")
-		s.m.tokens.Add(float64(u.CachedTokens), f.ModelID, "cached")
-		s.m.tokens.Add(float64(u.ReasoningTokens), f.ModelID, "reasoning")
-		if res.Err == nil {
+		if res.Err == nil && res.Cache == "" {
 			s.Router.Commit(dec, f, u.InputTokens)
 		}
 		if s.learner != nil && res.Err == nil {
+			full, prev := dec.Full, dec.Prev
+			// Replays remain addressable by explicit feedback but must not create
+			// regeneration/continuation signals for a new upstream generation.
+			if res.Cache != "" {
+				full, prev = "", ""
+			}
 			s.learner.Remember(&learn.Decision{ID: reqID, Vec: dec.Vec, Lex: dec.Lex, Axes: dec.Plan.Prediction.Axes,
 				Difficulty: dec.Plan.Prediction.Difficulty, ModelID: f.ModelID, Effort: f.Effort,
-				OutTokens: max(u.OutputTokens-u.ReasoningTokens, 1), At: time.Now()}, dec.Full, dec.Prev)
+				OutTokens: max(u.OutputTokens-u.ReasoningTokens, 1), At: time.Now()}, full, prev)
 		}
 	} else {
 		s.m.requests.Inc("", "", "", string(dec.Mode), outcome)
@@ -625,6 +680,9 @@ func explain(dec *router.Decision, res *dispatch.Result) map[string]any {
 	if res != nil {
 		out["attempts"] = res.Attempts
 		out["cost_usd"] = res.CostUSD
+		if res.Cache != "" {
+			out["cache"] = res.Cache
+		}
 	}
 	return out
 }
@@ -636,7 +694,7 @@ func decisionRecord(req *canon.Request, dec *router.Decision, id string, res *di
 		"axes": dec.Plan.Prediction.Axes.Map(), "features": dec.Plan.Features,
 		"chosen": dec.Plan.Chosen, "fallbacks": dec.Plan.Fallbacks, "lambda": dec.Plan.Lambda,
 		"attempts": res.Attempts, "cost_usd": res.CostUSD, "duration_ms": dur.Milliseconds(),
-		"routing_us": dec.RoutingTime.Microseconds(), "stream": req.Stream,
+		"routing_us": dec.RoutingTime.Microseconds(), "stream": req.Stream, "cache": res.Cache,
 	}
 	if res.Final != nil {
 		rec["final"] = res.Final.ModelID
@@ -670,7 +728,10 @@ func (s *Server) handleRoute(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, err.Error(), "invalid_request_error")
 		return
 	}
-	applyHeaders(r, req)
+	if err := applyHeaders(r, req); err != nil {
+		writeError(w, 400, err.Error(), "invalid_request_error")
+		return
+	}
 	dec, err := s.Router.Route(req)
 	if err != nil {
 		writeError(w, 400, err.Error(), "routing_error")

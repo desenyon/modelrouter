@@ -6,6 +6,7 @@
 package cache
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -37,9 +38,9 @@ type Store struct {
 }
 
 type call struct {
-	wg  sync.WaitGroup
-	ent Entry
-	ok  bool
+	done chan struct{}
+	ent  Entry
+	ok   bool
 }
 
 // New builds a store bounded by maxBytes.
@@ -61,27 +62,19 @@ func Cacheable(r *canon.Request) bool {
 // Key hashes every field that can change the completion, plus the routing
 // constraints (so a quality-mode request never gets a cost-mode answer).
 func Key(r *canon.Request, routeKey string) string {
-	type k struct {
-		Route   string                `json:"r"`
-		Msgs    []canon.Message       `json:"m"`
-		Tools   []canon.Tool          `json:"t,omitempty"`
-		TC      canon.ToolChoice      `json:"tc"`
-		PTC     *bool                 `json:"p,omitempty"`
-		RF      *canon.ResponseFormat `json:"f,omitempty"`
-		Max     int                   `json:"x,omitempty"`
-		Temp    *float64              `json:"te,omitempty"`
-		TopP    *float64              `json:"tp,omitempty"`
-		Stop    []string              `json:"s,omitempty"`
-		Seed    *int64                `json:"sd,omitempty"`
-		Effort  string                `json:"e,omitempty"`
-		Allow   []string              `json:"a,omitempty"`
-		Deny    []string              `json:"d,omitempty"`
-		MinQ    float64               `json:"q,omitempty"`
-		MaxCost float64               `json:"c,omitempty"`
+	// Hash the canonical request rather than maintaining a second field list.
+	// Only presentation and cache policy are excluded; routing/session/user
+	// constraints remain part of the identity.
+	rq := *r
+	rq.Stream, rq.StreamUsage = false, false
+	rq.Router.Explain, rq.Router.NoCache, rq.Router.ForceCache = false, false, false
+	b, err := json.Marshal(struct {
+		Route   string        `json:"route"`
+		Request canon.Request `json:"request"`
+	}{routeKey, rq})
+	if err != nil {
+		return "" // invalid requests must never share a cache key
 	}
-	b, _ := json.Marshal(k{routeKey, r.Messages, r.Tools, r.ToolChoice, r.ParallelToolCalls, r.ResponseFormat,
-		r.MaxTokens, r.Temperature, r.TopP, r.Stop, r.Seed, r.ReasoningEffort,
-		r.Router.Allow, r.Router.Deny, r.Router.MinQuality, r.Router.MaxCostUSD})
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
 }
@@ -94,7 +87,7 @@ func (s *Store) Get(key string) (Entry, bool) {
 	} else {
 		s.misses.Add(1)
 	}
-	return e, ok
+	return clone(e), ok
 }
 
 // Put stores an entry; cost is approximated by payload size.
@@ -103,36 +96,66 @@ func (s *Store) Put(key string, e Entry) {
 	for _, tc := range e.Resp.ToolCalls {
 		size += int64(len(tc.Arguments) + len(tc.Name) + len(tc.ID))
 	}
-	s.c.Put(key, e, size)
+	s.c.Put(key, clone(e), size)
 }
 
 // Do de-duplicates concurrent identical requests: the first caller runs fn,
 // followers wait and receive its result. shared reports a follower.
 func (s *Store) Do(key string, fn func() (Entry, bool)) (ent Entry, ok, shared bool) {
+	ent, ok, shared, _ = s.DoContext(context.Background(), key, fn)
+	return
+}
+
+// DoContext lets followers abandon their wait without canceling the leader.
+// The leader owns fn's lifetime; if it fails, callers may retry independently.
+func (s *Store) DoContext(ctx context.Context, key string, fn func() (Entry, bool)) (ent Entry, ok, shared bool, err error) {
 	s.mu.Lock()
 	if c, inflight := s.flight[key]; inflight {
 		s.mu.Unlock()
-		c.wg.Wait()
-		return c.ent, c.ok, true
+		select {
+		case <-ctx.Done():
+			return Entry{}, false, true, ctx.Err()
+		case <-c.done:
+			if err := ctx.Err(); err != nil {
+				return Entry{}, false, true, err
+			}
+			return clone(c.ent), c.ok, true, nil
+		}
 	}
-	c := &call{}
-	c.wg.Add(1)
+	if err := ctx.Err(); err != nil {
+		s.mu.Unlock()
+		return Entry{}, false, false, err
+	}
+	// Close the miss→join race: a previous leader may have populated the cache
+	// after the caller's initial lookup and before this lock was acquired.
+	if e, found := s.c.Get(key); found {
+		s.mu.Unlock()
+		return clone(e), true, true, nil
+	}
+	c := &call{done: make(chan struct{})}
 	s.flight[key] = c
 	s.mu.Unlock()
 	defer func() {
 		s.mu.Lock()
 		delete(s.flight, key)
+		close(c.done)
 		s.mu.Unlock()
-		c.wg.Done()
 	}()
 	c.ent, c.ok = fn()
+	c.ent = clone(c.ent)
 	if c.ok {
 		s.Put(key, c.ent)
 	}
-	return c.ent, c.ok, false
+	return clone(c.ent), c.ok, false, nil
 }
 
 // Stats returns hit/miss counts and resident bytes.
 func (s *Store) Stats() (hits, misses uint64, items int, bytes int64) {
 	return s.hits.Load(), s.misses.Load(), s.c.Len(), s.c.Cost()
+}
+
+// clone keeps callers from mutating cached or shared tool calls.
+func clone(e Entry) Entry {
+	e.Resp.ToolCalls = append([]canon.ToolCall(nil), e.Resp.ToolCalls...)
+	return e
 }

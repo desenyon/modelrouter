@@ -186,9 +186,10 @@ func Optimize(cat *catalog.Catalog, in Input, env Env) (*Plan, error) {
 		}
 		for _, effort := range efforts(m, in) {
 			c := evaluate(m, effort, delta, in, env)
-			c.Relaxed = soft
+			c.Relaxed = append([]string(nil), soft...)
 			if c.CostUSD > 0 && in.Req.Router.MaxCostUSD > 0 && c.CostUSD > in.Req.Router.MaxCostUSD {
-				c.Relaxed = append(c.Relaxed, "max_cost")
+				plan.Excluded = append(plan.Excluded, Exclusion{m.ID, "max_cost:" + effort})
+				continue
 			}
 			if in.Req.Router.MaxLatencyMs > 0 && c.LatencyMs > in.Req.Router.MaxLatencyMs {
 				c.Relaxed = append(c.Relaxed, "max_latency")
@@ -365,6 +366,10 @@ func constraints(m *catalog.Model, in Input, env Env) (hard string, soft []strin
 	}
 	if f.RemoteImages && !caps.ImageURLs {
 		return "no_remote_images", nil
+	}
+	// Only the native Gemini adapter currently serializes audio parts.
+	if f.Audio > 0 && (!caps.Audio || m.Provider != "gemini") {
+		return "no_audio", nil
 	}
 	if f.Files > 0 && !caps.PDF {
 		return "no_documents", nil

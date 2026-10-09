@@ -21,6 +21,9 @@ func loadTestModel(t testing.TB) *Model {
 		dir = DefaultDir()
 	}
 	if err := Present(dir); err != nil {
+		if os.Getenv("MODELROUTER_REQUIRE_EMBEDDER") == "1" {
+			t.Fatalf("required embedder not available: %v", err)
+		}
 		t.Skipf("embedder not available (%v); run `modelrouter embedder fetch`", err)
 	}
 	m, err := Load(dir)

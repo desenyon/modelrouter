@@ -132,6 +132,9 @@ func normProvider(s string) string {
 // Route makes a routing decision for req.
 func (r *Router) Route(req *canon.Request) (*Decision, error) {
 	start := time.Now()
+	if err := req.Validate(); err != nil {
+		return nil, err
+	}
 	tgt, err := ParseTarget(r.Catalog, req.Model)
 	if err != nil {
 		return nil, err
@@ -149,6 +152,9 @@ func (r *Router) Route(req *canon.Request) (*Decision, error) {
 	}
 	pin := tgt.Pin
 	if tgt.PassModel != "" {
+		if req.Router.MaxCostUSD > 0 {
+			return nil, fmt.Errorf("max_cost_usd requires a catalogued model with known pricing; configure %q first", req.Model)
+		}
 		// Explicit, uncatalogued model: synthesize an entry so it can be dispatched.
 		pin = optimize.Pin{Kind: optimize.PinModel, Model: passthroughModel(tgt.PassProvider, tgt.PassModel)}
 	}

@@ -93,6 +93,7 @@ type Attempt struct {
 
 // Result is the dispatch outcome.
 type Result struct {
+	Cache     string // hit/shared: replayed completion, no new upstream usage
 	Resp      canon.Response
 	Final     *optimize.Candidate
 	Attempts  []Attempt
@@ -126,6 +127,10 @@ func (d *Dispatcher) Run(ctx context.Context, job Job) Result {
 	attempts := 0
 	for i := 0; i < len(arms) && attempts < d.cfg.MaxAttempts; i++ {
 		cand := arms[i]
+		if ctx.Err() != nil {
+			res.Err = d.classify(ctx.Err(), ctx, cand)
+			return res
+		}
 		if tried[cand.ModelID] {
 			continue
 		}
@@ -138,7 +143,7 @@ func (d *Dispatcher) Run(ctx context.Context, job Job) Result {
 				break
 			}
 		}
-		if !d.health.Acquire(cand.Model.Provider, cand.ModelID) && attempts > 0 {
+		if !d.health.Acquire(cand.Model.Provider, cand.ModelID) {
 			continue
 		}
 		tried[cand.ModelID] = true
@@ -147,7 +152,7 @@ func (d *Dispatcher) Run(ctx context.Context, job Job) Result {
 		var l *live
 		var err *provider.Error
 		recorded := false
-		if attempts == 1 && d.cfg.Hedge {
+		if attempts == 1 && d.cfg.Hedge && attempts < d.cfg.MaxAttempts {
 			if h := hedgeCandidate(arms[i+1:], cand); h != nil {
 				var launched bool
 				l, err, launched = d.hedged(ctx, job, cand, h, &res)
@@ -360,13 +365,17 @@ func (d *Dispatcher) hedged(ctx context.Context, job Job, primary, second *optim
 				}
 				if outstanding > 0 {
 					go func() {
-						if r := <-ch; r.l != nil {
+						r := <-ch
+						if r.l != nil {
 							r.l.st.Close()
 							r.l.cancel(nil)
 						}
+						// Losing a race is neither success nor provider failure.
+						// Release any half-open probe only after the attempt stops.
+						d.health.Record(r.c.Model.Provider, r.c.ModelID, health.Outcome{})
 					}()
 				}
-				if launched {
+				if launched && outstanding > 0 {
 					loser := second
 					if o.c == second {
 						loser = primary
@@ -375,9 +384,7 @@ func (d *Dispatcher) hedged(ctx context.Context, job Job, primary, second *optim
 				}
 				return o.l, nil, launched
 			}
-			if o.err.Kind != provider.KindCanceled {
-				d.record(res, o.c, o.err, o.c == second)
-			}
+			d.record(res, o.c, o.err, o.c == second)
 			lastErr = o.err
 			if o.c == primary && !launched {
 				scancel()
@@ -463,8 +470,10 @@ func (d *Dispatcher) classify(err error, actx context.Context, c *optimize.Candi
 		pe = &provider.Error{Provider: c.Model.Provider, Model: c.ModelID, Kind: provider.KindTimeout, Message: "no output within first-token timeout"}
 	case errors.Is(cause, provider.ErrIdleTimeout):
 		pe = &provider.Error{Provider: c.Model.Provider, Model: c.ModelID, Kind: provider.KindTimeout, Message: "stream idle timeout"}
-	case errors.Is(cause, context.Canceled), errors.Is(cause, context.DeadlineExceeded):
-		// The request itself ended (client gone, total timeout, or a lost hedge).
+	case errors.Is(cause, context.DeadlineExceeded):
+		pe = &provider.Error{Provider: c.Model.Provider, Model: c.ModelID, Kind: provider.KindTimeout, Message: "request deadline exceeded", Err: cause}
+	case errors.Is(cause, context.Canceled):
+		// Client disconnect or a lost hedge.
 		pe = &provider.Error{Provider: c.Model.Provider, Model: c.ModelID, Kind: provider.KindCanceled, Message: cause.Error(), Err: provider.ErrClientGone}
 	}
 	return pe
