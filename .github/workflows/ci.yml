@@ -18,7 +18,6 @@ jobs:
     env:
       GOMAXPROCS: '2'
       GO_TEST_PARALLEL: '2'
-      MODELROUTER_EMBEDDER_DIR: ${{ runner.temp }}/modelrouter-embedder
       MODELROUTER_REQUIRE_EMBEDDER: '1'
     steps:
       - uses: actions/checkout@v7
@@ -28,6 +27,10 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Fetch and verify pinned embedder
+        env:
+          MODELROUTER_EMBEDDER_DIR: ${{ runner.temp }}/modelrouter-embedder
         run: go run . embedder fetch
       - name: Verify
+        env:
+          MODELROUTER_EMBEDDER_DIR: ${{ runner.temp }}/modelrouter-embedder
         run: ./scripts/verify.sh
