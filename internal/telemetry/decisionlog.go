@@ -3,6 +3,7 @@ package telemetry
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"math/rand/v2"
 	"os"
 	"sync"
@@ -14,11 +15,16 @@ import (
 // goroutine; when the buffer is full records are dropped rather than
 // blocking the request path.
 type DecisionLog struct {
-	ch      chan any
-	sample  float64
-	dropped atomic.Uint64
-	wg      sync.WaitGroup
-	f       *os.File
+	writeErr  error        // written by run, read only after wg.Wait
+	mu        sync.RWMutex // guards channel closure against concurrent Log
+	closed    bool
+	closeOnce sync.Once
+	closeErr  error
+	ch        chan any
+	sample    float64
+	dropped   atomic.Uint64
+	wg        sync.WaitGroup
+	f         *os.File
 }
 
 // OpenDecisionLog opens path for appending. sample ∈ (0,1] is the fraction kept.
@@ -40,18 +46,23 @@ func (d *DecisionLog) run() {
 	defer d.wg.Done()
 	w := bufio.NewWriterSize(d.f, 256<<10)
 	enc := json.NewEncoder(w)
+	recordError := func(err error) {
+		if d.writeErr == nil {
+			d.writeErr = err
+		}
+	}
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
 	for {
 		select {
 		case rec, ok := <-d.ch:
 			if !ok {
-				_ = w.Flush()
+				recordError(w.Flush())
 				return
 			}
-			_ = enc.Encode(rec)
+			recordError(enc.Encode(rec))
 		case <-tick.C:
-			_ = w.Flush()
+			recordError(w.Flush())
 		}
 	}
 }
@@ -62,6 +73,11 @@ func (d *DecisionLog) Log(rec any) {
 		return
 	}
 	if d.sample < 1 && rand.Float64() > d.sample {
+		return
+	}
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	if d.closed {
 		return
 	}
 	select {
@@ -76,7 +92,13 @@ func (d *DecisionLog) Close() error {
 	if d == nil {
 		return nil
 	}
-	close(d.ch)
-	d.wg.Wait()
-	return d.f.Close()
+	d.closeOnce.Do(func() {
+		d.mu.Lock()
+		d.closed = true
+		close(d.ch)
+		d.mu.Unlock()
+		d.wg.Wait()
+		d.closeErr = errors.Join(d.writeErr, d.f.Close())
+	})
+	return d.closeErr
 }

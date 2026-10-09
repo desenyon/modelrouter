@@ -2,6 +2,7 @@ package predict
 
 import (
 	"math"
+	"os"
 	"testing"
 
 	"github.com/desenyon/modelrouter/internal/canon"
@@ -12,8 +13,14 @@ import (
 
 func newTestPredictor(t testing.TB) *Predictor {
 	t.Helper()
-	dir := emb.DefaultDir()
+	dir := os.Getenv("MODELROUTER_EMBEDDER_DIR")
+	if dir == "" {
+		dir = emb.DefaultDir()
+	}
 	if err := emb.Present(dir); err != nil {
+		if os.Getenv("MODELROUTER_REQUIRE_EMBEDDER") == "1" {
+			t.Fatalf("required embedder not available: %v", err)
+		}
 		t.Skipf("embedder not available: %v", err)
 	}
 	m, err := emb.Load(dir)

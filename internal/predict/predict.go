@@ -105,10 +105,20 @@ type bank struct {
 	ridge *ridge
 }
 
+// Embedder is the local encoding contract. Implementations must be safe for
+// concurrent use and return stable vectors for the lifetime of a predictor.
+// Production uses embed.Model; tests can exercise the pipeline offline.
+type Embedder interface {
+	Name() string
+	Dim() int
+	EncodeStats(string, []float32) emb.Stats
+	EncodeInto(string, []float32) int
+}
+
 // Predictor is safe for concurrent use. Learned exemplars are added with
 // copy-on-write so the hot path never locks.
 type Predictor struct {
-	emb  *emb.Model
+	emb  Embedder
 	cfg  Config
 	bank atomic.Pointer[bank]
 	mu   sync.Mutex // serializes writers
@@ -116,7 +126,7 @@ type Predictor struct {
 }
 
 // New embeds the built-in bank and fits the ridge head.
-func New(m *emb.Model, cfg Config) (*Predictor, error) {
+func New(m Embedder, cfg Config) (*Predictor, error) {
 	if m == nil {
 		return nil, fmt.Errorf("predict: embedder is required")
 	}

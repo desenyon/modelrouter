@@ -111,9 +111,20 @@ const MaxBodyBytes = 64 << 20
 // Decode parses a Chat Completions request body.
 func Decode(r io.Reader) (*canon.Request, error) {
 	var cr chatRequest
-	dec := json.NewDecoder(io.LimitReader(r, MaxBodyBytes))
+	limited := &io.LimitedReader{R: r, N: MaxBodyBytes + 1}
+	dec := json.NewDecoder(limited)
 	if err := dec.Decode(&cr); err != nil {
 		return nil, fmt.Errorf("invalid JSON body: %w", err)
+	}
+	var trailing any
+	if err := dec.Decode(&trailing); err != io.EOF {
+		return nil, fmt.Errorf("body must contain exactly one JSON object")
+	}
+	if limited.N <= 0 {
+		return nil, fmt.Errorf("body exceeds %d bytes", MaxBodyBytes)
+	}
+	if cr.MaxTokens < 0 || cr.MaxCompletionTokens < 0 || cr.N < 0 {
+		return nil, fmt.Errorf("token limits and n must not be negative")
 	}
 	if len(cr.Messages) == 0 {
 		return nil, fmt.Errorf("messages must be a non-empty array")
@@ -152,7 +163,7 @@ func Decode(r io.Reader) (*canon.Request, error) {
 	req.Stop = stop
 	for _, t := range cr.Tools {
 		if t.Type != "" && t.Type != "function" {
-			continue // hosted tools are provider-specific; not routable
+			return nil, fmt.Errorf("unsupported tool type %q; only function tools are routable", t.Type)
 		}
 		req.Tools = append(req.Tools, canon.Tool{Name: t.Function.Name, Description: t.Function.Description, Parameters: t.Function.Parameters, Strict: t.Function.Strict})
 	}
@@ -176,6 +187,9 @@ func Decode(r io.Reader) (*canon.Request, error) {
 			req.ResponseFormat = &canon.ResponseFormat{Type: canon.FormatJSONSchema, Name: rf.JSONSchema.Name, Schema: rf.JSONSchema.Schema, Strict: rf.JSONSchema.Strict}
 		case "json_object":
 			req.ResponseFormat = &canon.ResponseFormat{Type: canon.FormatJSONObject}
+		case "text", "":
+		default:
+			return nil, fmt.Errorf("unsupported response_format type %q", rf.Type)
 		}
 	}
 	for i, m := range cr.Messages {
@@ -184,6 +198,9 @@ func Decode(r io.Reader) (*canon.Request, error) {
 			return nil, fmt.Errorf("messages[%d]: %w", i, err)
 		}
 		req.Messages = append(req.Messages, cm)
+	}
+	if err := req.Validate(); err != nil {
+		return nil, err
 	}
 	return req, nil
 }
@@ -305,9 +322,10 @@ func decodeContent(raw json.RawMessage) ([]canon.Part, error) {
 			}
 			out = append(out, canon.Part{Type: canon.PartFile, MediaType: mt, Data: data, Filename: p.File.Filename})
 		case "input_audio":
-			if p.InputAudio != nil {
-				out = append(out, canon.Part{Type: canon.PartAudio, MediaType: "audio/" + p.InputAudio.Format, Data: p.InputAudio.Data})
+			if p.InputAudio == nil || p.InputAudio.Data == "" || (p.InputAudio.Format != "wav" && p.InputAudio.Format != "mp3") {
+				return nil, fmt.Errorf("input_audio requires data and format wav or mp3")
 			}
+			out = append(out, canon.Part{Type: canon.PartAudio, MediaType: "audio/" + p.InputAudio.Format, Data: p.InputAudio.Data})
 		case "refusal":
 			// assistant history refusal parts carry no routable content
 		default:

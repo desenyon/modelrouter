@@ -28,6 +28,7 @@ type Features struct {
 	ToolResults     int     `json:"tool_results,omitempty"`
 	Images          int     `json:"images,omitempty"`
 	RemoteImages    bool    `json:"remote_images,omitempty"`
+	Audio           int     `json:"audio,omitempty"`
 	Files           int     `json:"files,omitempty"`
 	JSONMode        bool    `json:"json_mode,omitempty"`
 	SchemaFields    int     `json:"schema_fields,omitempty"`
@@ -93,7 +94,11 @@ func Extract(req *canon.Request) Features {
 					f.RemoteImages = true
 				}
 				mt += imageTokens
-			case canon.PartFile, canon.PartAudio:
+			case canon.PartAudio:
+				f.Audio++
+				// Coarse planning estimate; audio billing varies by provider.
+				mt += (len(p.Data)/filePageBytes + 1) * pageTokens
+			case canon.PartFile:
 				f.Files++
 				pages := len(p.Data)/filePageBytes + 1
 				mt += pages * pageTokens

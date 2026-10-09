@@ -138,6 +138,7 @@ const (
 
 // Caps are hard capabilities used by the constraint filter and adapters.
 type Caps struct {
+	Audio            bool `yaml:"audio" json:"audio"`
 	Tools            bool `yaml:"tools" json:"tools"`
 	ForcedToolChoice bool `yaml:"forced_tool_choice" json:"forced_tool_choice"` // tool_choice required/named
 	Vision           bool `yaml:"vision" json:"vision"`

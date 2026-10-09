@@ -253,3 +253,66 @@ func TestWireMaxTokensAddsReasoningAllowance(t *testing.T) {
 		t.Fatalf("inclusive limit must pass through, got %d", got)
 	}
 }
+
+func TestPrimaryMustAcquireHealthPermit(t *testing.T) {
+	a := &fakeProv{name: "a", scripts: map[string]*script{"m1": {text: []string{"blocked"}}}}
+	b := &fakeProv{name: "b", scripts: map[string]*script{"m2": {text: []string{"healthy"}}}}
+	d, h := newD(a, b)
+	h.Record("a", "a/m1", health.Outcome{RateLimited: true, RetryAfter: time.Minute})
+	res := d.Run(context.Background(), Job{Req: req(), Plan: plan(model("m1", "a"), model("m2", "b"))})
+	if res.Err != nil || res.Resp.Content != "healthy" || a.scripts["m1"].calls.Load() != 0 {
+		t.Fatalf("blocked primary was called: %+v", res)
+	}
+}
+
+func TestTotalDeadlineIsTimeoutWithoutFurtherAttempts(t *testing.T) {
+	a := &fakeProv{name: "a", scripts: map[string]*script{"slow": {delay: time.Second, text: []string{"late"}}}}
+	b := &fakeProv{name: "b", scripts: map[string]*script{"fast": {text: []string{"ok"}}}}
+	d, _ := newD(a, b)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	res := d.Run(ctx, Job{Req: req(), Plan: plan(model("slow", "a"), model("fast", "b"))})
+	if res.Err == nil || res.Err.Kind != provider.KindTimeout {
+		t.Fatalf("deadline classified as %v", res.Err)
+	}
+	if b.scripts["fast"].calls.Load() != 0 {
+		t.Fatal("upstream called after request deadline")
+	}
+}
+
+func TestHedgingHonorsMaxAttempts(t *testing.T) {
+	a := &fakeProv{name: "a", scripts: map[string]*script{"slow": {delay: 80 * time.Millisecond, text: []string{"slow"}}}}
+	b := &fakeProv{name: "b", scripts: map[string]*script{"fast": {text: []string{"fast"}}}}
+	d, _ := newD(a, b)
+	d.cfg.Hedge, d.cfg.HedgeMinDelay, d.cfg.MaxAttempts = true, time.Millisecond, 1
+	res := d.Run(context.Background(), Job{Req: req(), Plan: plan(model("slow", "a"), model("fast", "b"))})
+	if res.Err != nil || b.scripts["fast"].calls.Load() != 0 || len(res.Attempts) != 1 {
+		t.Fatalf("max_attempts=1 launched hedge: %+v", res)
+	}
+}
+
+func TestHedgeLoserReleasesHalfOpenProbe(t *testing.T) {
+	a := &fakeProv{name: "a", scripts: map[string]*script{"slow": {delay: time.Second, text: []string{"late"}}}}
+	b := &fakeProv{name: "b", scripts: map[string]*script{"fast": {text: []string{"ok"}}}}
+	d, h := newD(a, b)
+	now := time.Now()
+	h.SetClock(func() time.Time { return now })
+	for range 3 {
+		h.Record("a", "a/slow", health.Outcome{HealthFail: true})
+	}
+	now = now.Add(time.Minute)
+	d.cfg.Hedge, d.cfg.HedgeMinDelay = true, time.Millisecond
+	res := d.Run(context.Background(), Job{Req: req(), Plan: plan(model("slow", "a"), model("fast", "b"))})
+	if res.Err != nil || res.Resp.Content != "ok" {
+		t.Fatalf("hedge failed: %+v", res)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if h.Acquire("a", "a/slow") {
+			h.Record("a", "a/slow", health.Outcome{})
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("canceled half-open hedge kept probe forever")
+}

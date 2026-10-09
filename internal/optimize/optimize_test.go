@@ -184,3 +184,75 @@ func BenchmarkOptimize(b *testing.B) {
 		_, _ = Optimize(cat, in, Env{Now: now})
 	}
 }
+
+func TestMaxCostNeverRelaxed(t *testing.T) {
+	cat := testCatalog(t)
+	in := input("hi", .03, map[string]float64{"knowledge": 1}, 20)
+	in.Req.Router.MaxCostUSD = 1e-12
+	p, err := Optimize(cat, in, Env{Now: now})
+	if err == nil || p.Chosen != nil {
+		t.Fatalf("impossible cost cap admitted a model: %+v", p.Chosen)
+	}
+}
+
+func TestFallbacksRespectMaxCost(t *testing.T) {
+	in := input("hi", .03, map[string]float64{"knowledge": 1}, 20)
+	cat := testCatalog(t)
+	unlimited, err := Optimize(cat, in, Env{Now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	in.Req.Router.MaxCostUSD = unlimited.Chosen.CostUSD
+	p, err := Optimize(cat, in, Env{Now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range append([]*Candidate{p.Chosen}, p.Fallbacks...) {
+		if c.CostUSD > in.Req.Router.MaxCostUSD {
+			t.Errorf("over-budget arm %s: %g > %g", c.ModelID, c.CostUSD, in.Req.Router.MaxCostUSD)
+		}
+	}
+}
+
+func TestAudioOnlyRoutesToCapableModels(t *testing.T) {
+	in := input("transcribe", .3, map[string]float64{"knowledge": 1}, 20)
+	in.Req.Messages[0].Parts = append(in.Req.Messages[0].Parts, canon.Part{Type: canon.PartAudio, MediaType: "audio/wav", Data: "AAAA"})
+	in.Feat = features.Extract(in.Req)
+	p, err := Optimize(testCatalog(t), in, Env{Now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range append([]*Candidate{p.Chosen}, p.Fallbacks...) {
+		if c.Model.Provider != "gemini" {
+			t.Errorf("audio routed to unsupported adapter: %s", c.ModelID)
+		}
+	}
+	_, err = Optimize(testCatalog(t), in, Env{Now: now, ProviderReady: func(p string) bool { return p == "openai" }})
+	if err == nil {
+		t.Fatal("audio accepted without a capable provider")
+	}
+}
+
+func TestAudioCannotEnableAnUnsupportedNativeAdapter(t *testing.T) {
+	cat := testCatalog(t)
+	m, _ := cat.Lookup("gpt-6-luna")
+	m.Caps.Audio = true // a catalog override cannot add protocol support
+	in := input("transcribe", .3, map[string]float64{"knowledge": 1}, 20)
+	in.Pin = Pin{Kind: PinModel, Model: m}
+	in.Req.Messages[0].Parts = []canon.Part{{Type: canon.PartAudio, MediaType: "audio/wav", Data: "AAAA"}}
+	in.Feat = features.Extract(in.Req)
+	if _, err := Optimize(cat, in, Env{Now: now}); err == nil {
+		t.Fatal("unsupported adapter admitted audio")
+	}
+}
+
+func TestPinnedModelStillRespectsMaxCost(t *testing.T) {
+	cat := testCatalog(t)
+	m, _ := cat.Lookup("gpt-6-astra")
+	in := input("hi", .03, map[string]float64{"knowledge": 1}, 20)
+	in.Pin = Pin{Kind: PinModel, Model: m}
+	in.Req.Router.MaxCostUSD = 1e-12
+	if _, err := Optimize(cat, in, Env{Now: now}); err == nil {
+		t.Fatal("model pin bypassed cap")
+	}
+}

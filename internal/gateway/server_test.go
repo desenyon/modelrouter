@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -56,8 +57,14 @@ func (s *listStream) Next() (canon.Event, error) {
 
 func newTestServer(t *testing.T, mutate func(*config.Config)) (*httptest.Server, map[string]*echoProv) {
 	t.Helper()
-	dir := embed.DefaultDir()
+	dir := os.Getenv("MODELROUTER_EMBEDDER_DIR")
+	if dir == "" {
+		dir = embed.DefaultDir()
+	}
 	if err := embed.Present(dir); err != nil {
+		if os.Getenv("MODELROUTER_REQUIRE_EMBEDDER") == "1" {
+			t.Fatalf("required embedder not available: %v", err)
+		}
 		t.Skipf("embedder not available: %v", err)
 	}
 	em, err := embed.Load(dir)
@@ -79,6 +86,7 @@ func newTestServer(t *testing.T, mutate func(*config.Config)) (*httptest.Server,
 		t.Fatal(err)
 	}
 	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(s.Close)
 	t.Cleanup(ts.Close)
 	return ts, provs
 }
